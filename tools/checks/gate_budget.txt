@@ -463,7 +463,9 @@ ctest.entries 43
 # page's loop, which skips).
 # 1254 since Scene's 3D lines, in en and ja (a row of lights, which skips:
 # it opens a window).
-docs.blocks 1254
+# 1256 since Scene's detail texture, in en and ja (ripples on a ground's
+# water, which skips: it needs a View).
+docs.blocks 1256
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

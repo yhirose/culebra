@@ -6548,6 +6548,7 @@ setters, so one reads as a single expression:
 | `mat.texture(tex) -> Material` | a `Texture` to sample, or `nil` for none |
 | `mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material` | scale and offset the texture coordinates (tiling a road; `-1.0` in `us` mirrors) |
 | `mat.normal_map(tex, strength = 1.0) -> Material` | a tangent-space normal map (`Scene.Image.to_normal` makes one); the tangent frame is derived per pixel, so a mesh needs no tangents; `nil` removes it |
+| `mat.detail(tex, us, vs, strength = 1.0, masked = false) -> Material` | a detail texture: `tex` repeated `us` × `vs` times across the mesh's own UVs (`uv()` does not move it) and added to the texture's colour about grey 128, times `strength`; `masked` makes the texture's alpha where it applies (below); `nil` removes it |
 | `mat.opacity(a) -> Material` | 0–255; below 255 the surface is transparent |
 | `mat.cutout(threshold) -> Material` | discard where coverage (opacity × texture alpha) is below it (a leaf card); 0 turns it off |
 | `mat.blend(name) -> Material` | how a transparent surface meets what is behind it: `"over"` (default), `"add"` (lamps, glows), `"multiply"`, `"screen"` |
@@ -6565,6 +6566,26 @@ let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
 let glass = view.add_material().rgb(200, 220, 255).opacity(90).depth_write(false).casts_shadow(false)
 let shadow = view.add_material().rgb(0, 0, 0).opacity(110).unlit().depth_write(false).casts_shadow(false)
+```
+
+A detail texture adds fine grain the texture's own pixels are too large to
+carry — ripples on water a ground image shows a few metres to the pixel. Each
+of its channels moves the colour up where it is above 128 and down where it is
+below, by its distance from 128 times `strength`, so grey 128 leaves the colour
+alone. It is mixed into the texture's colour before anything else reads it, so
+it works on an `unlit()` surface too. It has its own `Texture`, so its own
+`filter` and mipmaps: a pattern averaging 128, mipmapped, fades into its far
+levels' grey and leaves the colour's mean as it was from afar. With `masked`,
+the texture's alpha is how much of the detail a pixel takes — 255 all of it,
+0 none, the water of a ground image and not its land — and no longer its
+coverage: the surface is as opaque as its opacity, and `cutout` reads that alone.
+
+```culebra
+# doctest: skip
+let ripples = view.texture(Scene.Image.new(64, 64).fill(128, 128, 128).noise(1, 4.0, 60))
+let ground = view.add_material().unlit()
+  .texture(tile)                                # alpha 255 on water
+  .detail(ripples, 50.0, 50.0, strength: 0.4, masked: true)
 ```
 
 A surface is transparent when its opacity (node × material) is below 255 or

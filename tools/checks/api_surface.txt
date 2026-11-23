@@ -676,6 +676,7 @@ mat.pbr(metallic, roughness) -> Material
 mat.texture(tex) -> Material
 mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material
 mat.normal_map(tex, strength = 1.0) -> Material
+mat.detail(tex, us, vs, strength = 1.0, masked = false) -> Material
 mat.opacity(a) -> Material
 mat.cutout(threshold) -> Material
 mat.blend(name) -> Material

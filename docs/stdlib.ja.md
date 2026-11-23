@@ -6316,6 +6316,7 @@ lights.build()
 | `mat.texture(tex) -> Material` | サンプルする`Texture`。`nil`で無し |
 | `mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material` | テクスチャ座標の拡縮とオフセット（路面のタイル。`us`に`-1.0`で左右反転） |
 | `mat.normal_map(tex, strength = 1.0) -> Material` | タンジェント空間の法線マップ（`Scene.Image.to_normal`が作る）。タンジェント枠はピクセルごとに導出するのでメッシュにタンジェントは不要。`nil`で外す |
+| `mat.detail(tex, us, vs, strength = 1.0, masked = false) -> Material` | 細部のテクスチャ。`tex`をメッシュ自身のUVで`us` × `vs`回繰り返して貼り（`uv()`では動かない）、テクスチャの色に灰色128を中心として`strength`倍で足す。`masked`でテクスチャのαが効く所を決める（下記）。`nil`で外す |
 | `mat.opacity(a) -> Material` | 0–255。255未満で透過面になる |
 | `mat.cutout(threshold) -> Material` | 被覆（opacity × テクスチャalpha）がこれ未満のピクセルを捨てる（葉のカード）。0でoff |
 | `mat.blend(name) -> Material` | 透過面が背後と混ざる方法: `"over"`（既定）、`"add"`（ランプ、光）、`"multiply"`、`"screen"` |
@@ -6333,6 +6334,24 @@ let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
 let glass = view.add_material().rgb(200, 220, 255).opacity(90).depth_write(false).casts_shadow(false)
 let shadow = view.add_material().rgb(0, 0, 0).opacity(110).unlit().depth_write(false).casts_shadow(false)
+```
+
+細部のテクスチャは、テクスチャ自身の画素では大きすぎて描けない細かい模様を足します。
+1画素が数メートルの地面の画像に描かれた水面のさざ波などです。各チャンネルは、128より
+上なら色を上げ、下なら下げ、その量は128からの差 × `strength`です。灰色128は色を変えません。
+ほかの何かが読む前にテクスチャの色に混ぜるので、`unlit()`の面にも効きます。
+細部のテクスチャは別の`Texture`なので、`filter`もミップマップもそれ自身のものです。平均が
+128の模様をミップマップ付きにすれば、遠くでは遠いレベルの灰色に溶け、遠くから見た色の
+平均を変えません。`masked`のときは、テクスチャのαが、その画素が細部をどれだけ受けるか
+（255で全部、0で受けない。地面の画像の水の所だけで、陸には効かせない）になり、被覆では
+なくなります。面の不透明さは不透明度だけで決まり、`cutout`もそれだけを読みます。
+
+```culebra
+# doctest: skip
+let ripples = view.texture(Scene.Image.new(64, 64).fill(128, 128, 128).noise(1, 4.0, 60))
+let ground = view.add_material().unlit()
+  .texture(tile)                                # 水の所はα 255
+  .detail(ripples, 50.0, 50.0, strength: 0.4, masked: true)
 ```
 
 面は、不透明度（node × material）が255未満か、blendが`"over"`以外なら透過面です。

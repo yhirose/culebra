@@ -103,14 +103,17 @@ uniform mat4 mvp;
 uniform mat4 matModel;
 uniform mat4 matNormal;
 uniform vec4 uvXform;     // per-material UV scale.xy + offset.zw (tiling, flips)
+uniform vec4 detailXform; // the detail texture's, from the mesh's own UVs
 out vec3 fragNormal;
 out vec3 fragWorld;
 out vec2 fragUV;
+out vec2 fragDetailUV;
 out vec4 fragColor;
 void main() {
   fragNormal = normalize((matNormal * vec4(vertexNormal, 0.0)).xyz);
   fragWorld = (matModel * vec4(vertexPosition, 1.0)).xyz;
   fragUV = vertexTexCoord * uvXform.xy + uvXform.zw;
+  fragDetailUV = vertexTexCoord * detailXform.xy + detailXform.zw;
   fragColor = vertexColor;
   gl_Position = mvp * vec4(vertexPosition, 1.0);
 }
@@ -158,6 +161,7 @@ static const char* kFS = R"(
 in vec3 fragNormal;
 in vec3 fragWorld;
 in vec2 fragUV;
+in vec2 fragDetailUV;
 in vec4 fragColor;
 uniform sampler2D texture0;
 // Shadow cascades carried on raylib's own material-map samplers (texture1 =
@@ -171,6 +175,11 @@ uniform sampler2D texture2;     // far cascade (wide)
 // and UV (Schüler's method): exact on flat faces, good enough on curved ones.
 uniform sampler2D normalMap;
 uniform float normalStrength;   // 0 = no normal map
+// The detail texture rides the OCCLUSION map slot (texture4), as the normal
+// map rides ROUGHNESS.
+uniform sampler2D detailMap;
+uniform float detailStrength;   // 0 = no detail texture
+uniform float detailMasked;     // 1: texture0's alpha is the detail's strength, not coverage
 uniform float lodBias;          // log2 of a supersampled pass's factor, else 0
 uniform mat4 lightVP0;
 uniform mat4 lightVP1;
@@ -219,7 +228,14 @@ void main() {
   // texture0 defaults to a 1x1 white texture, so untextured shapes are
   // unaffected (white * colour). A material can swap in a real texture.
   vec4 tex = texture(texture0, fragUV, lodBias);
-  float cover = opacity * tex.a;
+  float cover = opacity * (detailMasked > 0.5 ? 1.0 : tex.a);
+  // Added about grey 128, so a pattern averaging it — as its far mip levels
+  // do — leaves the colour's mean alone.
+  if (detailStrength != 0.0) {
+    float k = detailStrength * (detailMasked > 0.5 ? tex.a : 1.0);
+    vec3 d = texture(detailMap, fragDetailUV, lodBias).rgb - 128.0 / 255.0;
+    tex.rgb = clamp(tex.rgb + d * k, 0.0, 1.0);
+  }
   if (cutoff > 0.0 && cover < cutoff) discard;
   vec3 N = normalize(fragNormal);
   if (normalStrength > 0.0) {
@@ -663,6 +679,13 @@ class Texture : public std::enable_shared_from_this<Texture> {
   // transform (emit) and a sprite's source rectangle. One flag, every reader.
   bool flip_v = false;
   uint64_t epoch = gl_epoch();
+  // A UV transform (scale.xy, offset.zw) that reads this texture upright:
+  // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo). The flip composes with the
+  // material's own transform, so a mirror's uv(-1, 1, 1, 0) still mirrors.
+  Vector4 upright(Vector4 uv) const {
+    if (flip_v) { uv.y = -uv.y; uv.w = 1.0f - uv.w; }
+    return uv;
+  }
 
   Texture() = default;
   Texture(const Texture&) = delete;
@@ -741,12 +764,25 @@ class Material : public std::enable_shared_from_this<Material> {
   Vector4 uv_{1, 1, 0, 0};   // scale.xy, offset.zw
   std::shared_ptr<const Texture> normal;
   float normal_strength = 0.0f;
+  std::shared_ptr<const Texture> detail_tex;
+  Vector4 detail_uv{1, 1, 0, 0};   // scale.xy; the offset is 0
+  float detail_strength = 0.0f;
+  bool detail_masked = false;
 
   Material& rgb(int64_t r, int64_t g, int64_t b) { color = col(r, g, b); return *this; }
   // A tangent-space normal map (Scene.Image.to_normal makes one); nil removes it.
   Material& normal_map(const Texture* t, double strength) {
     normal = t ? t->shared_from_this() : nullptr;
     normal_strength = t ? (float)strength : 0.0f;
+    return *this;
+  }
+  // A second texture repeated at its own scale of the mesh's UVs, added to
+  // the texture's colour about grey 128; nil removes it.
+  Material& detail(const Texture* t, double us, double vs, double strength, bool masked) {
+    detail_tex = t ? t->shared_from_this() : nullptr;
+    detail_uv = Vector4{(float)us, (float)vs, 0, 0};
+    detail_strength = t ? (float)strength : 0.0f;
+    detail_masked = t && masked;
     return *this;
   }
   Material& pbr(double m, double r) { metallic = (float)m; roughness = (float)r; return *this; }
@@ -1697,6 +1733,10 @@ class View {
     // DrawMesh binds maps[i] to shader.locs[MAP_DIFFUSE + i]; raylib fills the
     // first three (texture0..2), so the normal map's slot is named here.
     lit_.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(lit_, "normalMap");
+    lit_.locs[SHADER_LOC_MAP_OCCLUSION] = GetShaderLocation(lit_, "detailMap");
+    loc_detail_uv_ = GetShaderLocation(lit_, "detailXform");
+    loc_detail_k_ = GetShaderLocation(lit_, "detailStrength");
+    loc_detail_masked_ = GetShaderLocation(lit_, "detailMasked");
     sky_top_ = Color{135, 165, 205, 255};   // default reflected sky until sky() is called
     sky_bot_ = Color{182, 202, 224, 255};
     set_sky_uniform();
@@ -2357,16 +2397,26 @@ class View {
     float unlit = m && m->unlit_ ? 1.0f : 0.0f;
     Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
     Vector4 uv = m ? m->uv_ : Vector4{1, 1, 0, 0};
-    // A bottom-up texture (a canvas, a render target) reads upright through
-    // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo): the flip composes with the
-    // material's own transform, so a mirror's uv(-1, 1, 1, 0) still mirrors.
-    if (m && m->tex && m->tex->live() && m->tex->flip_v) { uv.y = -uv.y; uv.w = 1.0f - uv.w; }
+    if (m && m->tex && m->tex->live()) uv = m->tex->upright(uv);
     bool nm = m && m->normal && m->normal->live();
     float nstrength = nm ? m->normal_strength : 0.0f;
     mat_.maps[MATERIAL_MAP_DIFFUSE].color = m ? m->color : it.node->color;
     mat_.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
     mat_.maps[MATERIAL_MAP_ROUGHNESS].texture = nm ? m->normal->tex : white_;
     SetShaderValue(lit_, loc_nstrength_, &nstrength, SHADER_UNIFORM_FLOAT);
+    Texture2D dtex = white_;
+    float dstrength = 0.0f, dmasked = 0.0f;
+    Vector4 duv{1, 1, 0, 0};
+    if (m && m->detail_tex && m->detail_tex->live()) {
+      dtex = m->detail_tex->tex;
+      dstrength = m->detail_strength;
+      dmasked = m->detail_masked ? 1.0f : 0.0f;
+      duv = m->detail_tex->upright(m->detail_uv);
+    }
+    mat_.maps[MATERIAL_MAP_OCCLUSION].texture = dtex;
+    SetShaderValue(lit_, loc_detail_k_, &dstrength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_detail_masked_, &dmasked, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_detail_uv_, &duv, SHADER_UNIFORM_VEC4);
     SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_rough_, &roughness, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_cutoff_, &cutoff, SHADER_UNIFORM_FLOAT);
@@ -2892,6 +2942,7 @@ class View {
   int loc_metallic_ = 0, loc_rough_ = 0;
   int loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0;
   int loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
+  int loc_detail_uv_ = 0, loc_detail_k_ = 0, loc_detail_masked_ = 0;
   bool culling_ = true;
   std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
   Vector3 dir_ = Vector3{0.4f, -0.8f, -0.48f};   // unit length, like sun() stores
@@ -2978,7 +3029,8 @@ const bool registered = [] {
       .borrowed_method<&gfx::Material::fog>("fog", {"on"})
       .borrowed_method<&gfx::Material::blend>("blend", {"name"})
       .borrowed_method<&gfx::Material::uv>("uv", {"us", "vs", {"uo", 0.0}, {"vo", 0.0}})
-      .borrowed_method<&gfx::Material::normal_map>("normal_map", {"tex", {"strength", 1.0}});
+      .borrowed_method<&gfx::Material::normal_map>("normal_map", {"tex", {"strength", 1.0}})
+      .borrowed_method<&gfx::Material::detail>("detail", {"tex", "us", "vs", {"strength", 1.0}, {"masked", false}});
 
   culebra::wrap<gfx::Node>("Scene", "Node")
       .borrowed_method<&gfx::Node::move>("move", {"x", "y", "z"})

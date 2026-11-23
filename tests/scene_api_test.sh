@@ -358,6 +358,7 @@ let green = view.add_material().rgb(0, 255, 0).unlit().opacity(128)
 # every other knob, on a plate off to the side, so each binding runs
 let odd = view.add_material().rgb(255, 255, 0).blend("add").depth_write(false).depth_test(true).double_sided()
 odd.cutout(0.5).emissive(255, 128, 0, 0.5).fog(false).casts_shadow(false).uv(2.0, 2.0, 0.25, 0.0).blend("nosuch")
+  .detail(view.texture(Scene.Image.new(4, 4).fill(128, 128, 128)), 4.0, 4.0, strength: 0.3, masked: true)
 let back = view.add_box(6.0, 6.0, 0.2).material(red)
 let plate_b = view.add_box(2.0, 2.0, 0.2).move(0.0, 0.0, 2.0).material(blue)
 let plate_g = view.add_box(2.0, 2.0, 0.2).move(0.5, 0.0, 2.0).material(green)
@@ -1480,6 +1481,74 @@ println(err(fn () { view.add_box(1.0, 1.0, 1.0).add_lines(-1.0) }))
 view.drop()
 EOS
 
+# A detail texture: a 2 x 2 checker of 192 and 64 repeated 8 times across a
+# plate that fills a 64 x 64 target, so a cell is 4 pixels, over a grey 100
+# texture whose left half is water (alpha 255) and right half land (alpha 0).
+# Each plate stands 100 m from the last, a camera 10 m in front of each. The
+# target keeps the coverage in its alpha, so where the texture's alpha is
+# coverage the land shows the black behind the sprite.
+cat > scene_detail.cul <<'EOS'
+let view = Scene.View.new(64, 64, "scene detail")
+view.background(0, 0, 0)
+view.post_process(false)
+Canvas.init(64, 64)
+let target = view.render_target(64, 64)
+# plate `i` as the target shows it, read back into the Canvas
+fn shot(i) {
+  let x = 100.0 * i
+  view.render_to(target, x, 0.0, 10.0, x, 0.0, 0.0, 0.0, 1.0, 0.0, 90.0)
+  view.begin_2d()
+  view.sprite(target, 0.0, 0.0, 64.0, 64.0)
+  view.screenshot("detail.png")
+  view.present()
+  Canvas.Sprite.from_png(FS.read("detail.png")).draw(0, 0)
+}
+# the red channel of a pixel, across row 30
+fn at(x) { Canvas.get_pixel(x, 30) & 255 }
+fn near(a, b) { Math.abs(a - b) <= 1 }
+# Each water pixel is 100 + 32 in a light cell and 100 - 32 in a dark one,
+# in the phase `light0` gives cell 0.
+fn checkered(xs, light0) {
+  xs.all(|x| near(at(x), (x / 4 % 2 == 0) == light0 ? 132 : 68))
+}
+let left = range(0, 32).collect()
+let right = range(32, 64).collect()
+let image = Scene.Image.new(16, 16).fill(100, 100, 100).rect(8, 0, 8, 16, 100, 100, 100, 0)
+let base = view.texture(image, false, false).filter("point")
+let sharp = view.checker(2, 2, 192, 192, 192, 64, 64, 64).filter("point")
+let averaged = view.checker(2, 2, 192, 192, 192, 64, 64, 64).filter("trilinear")
+fn plate(i, mat) { view.add_box(20.0, 20.0, 0.01).move(100.0 * i, 0.0, 0.0).material(mat) }
+fn water(tex, n) {
+  view.add_material().unlit().texture(base).detail(tex, n, n, strength: 0.5, masked: true)
+}
+plate(0, water(sharp, 8.0))
+plate(1, water(sharp, 8.0).uv(-1.0, 1.0, 1.0, 0.0))
+plate(2, water(averaged, 512.0))
+plate(3, water(sharp, 8.0).cutout(0.5))
+plate(4, view.add_material().unlit().texture(base))
+plate(5, water(sharp, 8.0).detail(nil, 8.0, 8.0))
+plate(6, view.add_material().texture(base).detail(sharp, 8.0, 8.0, strength: 0.5))
+
+shot(0)
+let light0 = at(0) > 100
+println("8 repeats on the water: {checkered(left, light0)}")
+println("the land keeps its colour: {right.all(|x| at(x) == 100)}")
+println("the water's mean is the texture's: {near(left.map(at).sum() / 32, 100)}")
+shot(1)
+println("uv() moves the texture, not the detail: {checkered(right, light0) && left.all(|x| at(x) == 100)}")
+shot(2)
+println("far, the mean is unchanged: {left.all(|x| near(at(x), 100)) && right.all(|x| at(x) == 100)}")
+shot(3)
+println("masked, alpha is no longer coverage, cutout or not: {right.all(|x| at(x) == 100)}")
+shot(4)
+println("without a detail texture, alpha is coverage: {left.all(|x| at(x) == 100) && right.all(|x| at(x) == 0)}")
+shot(5)
+println("nil removes it: {left.all(|x| at(x) == 100) && right.all(|x| at(x) == 0)}")
+shot(6)
+println("lit too: {at(1) != at(5) && at(1) == at(9) && at(5) == at(13)}")
+view.drop()
+EOS
+
 # A queued 2D draw names its texture or font atlas by GPU id until the frame is
 # presented, so a handle the script lets go of first must stay alive: the next
 # canvases take the freed ids, and the sprite and the text would show them.
@@ -1601,6 +1670,11 @@ run_pair lines "4x: one pixel's worth a column, at every offset: true" \
   "ValueError: add_lines: width must be a positive number of pixels, got 0" \
   "ValueError: add_lines: width must be a positive number of pixels, got -1"
 echo "OK: 3D lines keep their width in output pixels, steady and unbroken in a 4x target"
+run_pair detail "8 repeats on the water: true" "the land keeps its colour: true" \
+  "the water's mean is the texture's: true" "uv() moves the texture, not the detail: true" \
+  "far, the mean is unchanged: true" "masked, alpha is no longer coverage, cutout or not: true" \
+  "without a detail texture, alpha is coverage: true" "nil removes it: true" "lit too: true"
+echo "OK: a detail texture repeats at its own scale where the texture's alpha lets it"
 run_pair life "a sprite outlives its handle: true" "text outlives its font: true"
 echo "OK: a handle dropped before present() still draws what it was given"
 
