@@ -6434,6 +6434,7 @@ persistent geometry once and move it each frame.
 | --- | --- |
 | `view.add_box(w, h, d)` / `add_sphere(r)` / `add_cylinder(r, h)` / `add_plane(w, d)` | add a primitive node (a `node` adds the same shapes as a child) |
 | `view.add_mesh()` / `node.add_mesh()` | add an empty custom mesh (below) |
+| `view.add_lines(width = 1.0)` / `node.add_lines(width = 1.0)` | add an empty set of 3D lines, `width` pixels wide on screen (below) |
 | `node.move(x, y, z)` | set position |
 | `node.yaw(a)` / `pitch(a)` / `roll(a)` | rotate about one axis (radians) |
 | `node.spin(x, y, z, a)` / `euler(x, y, z)` | axis-angle / Euler rotation |
@@ -6486,6 +6487,53 @@ mesh reads one shared buffer of those values, which matters to a scene of
 thousands of meshes that are unlit or untextured, since a GL driver can keep
 every buffer in a page of its own (16 KB on macOS). A length that does not fit the
 vertex count is a `ValueError`.
+
+A lines node draws straight segments between points in the world — a row of
+lights, an approach path, a debug axis. `l.segment(x0, y0, z0, x1, y1, z1)`
+adds one, `l.color(r, g, b)` sets the colour of the segments added after it
+(as on a mesh; white before the first call), and `l.build()` uploads them. A
+segment keeps the same width on screen at any distance: `width` counts pixels
+of what the pass outputs — the window for `render_3d()`, a render target's
+`w` × `h` for `render_to` — whatever its `supersample`. So a 1-pixel line in a
+`render_target(w, h, supersample: 4)` is drawn 4 pixels wide and averaged
+down to one pixel's worth of colour, split between two pixels where it falls
+between them: it neither breaks up nor flickers as it moves. Its edges are
+smoothed — each pixel takes the share of it the line covers — so this holds at
+any angle and at 1× too. A line narrower than one pixel of the target being
+drawn is drawn one pixel wide and as much fainter, and a `width` that is not a
+positive number is a `ValueError`.
+
+A line is never lit and casts no shadow. It takes its colour from its segments
+times the material's colour (or the node's `tint`), and from the material its
+opacity, `blend`, `depth_test`, `depth_bias` and fog; its texture and the rest
+do not apply. Its smoothed edges blend over what is behind them, so lines are
+drawn with the transparent surfaces, after the opaque ones, and write no depth
+(`depth_write` does not apply).
+
+What hides a line is decided at its axis, not where its width reaches: a
+pixel of the line is hidden when the point of the axis beside it is behind
+an opaque surface drawn before it. So a row of lights just above the ground, seen at a
+grazing angle, keeps its whole width instead of losing the part that falls on
+the nearer ground below it. `depth_bias` moves the axis as it moves a surface,
+the slope term taking the slope of the surface under the line: a line over a
+surface drawn with a `depth_bias` takes at least that bias, and a marking lying
+on it a stronger one — `(-1.0, -16.0)` on a runway at `(-1.0, -4.0)`. A segment
+that runs behind the camera is cut where it passes the near clip plane. Each
+end reaches half the width past its point, so the segments of a path meet
+without a notch, and a segment whose two ends are the same point draws a
+square dot. There is no limit on the number of segments; build a set that
+never changes once, as with a mesh.
+
+```culebra
+# doctest: skip — opens a window
+let lights = view.add_lines()
+lights.color(255, 230, 160)
+for i in 0..30 {
+  let z = -30.0 * i
+  lights.segment(-1.0, 0.3, z, 1.0, 0.3, z)
+}
+lights.build()
+```
 
 ### Materials, lighting, textures
 

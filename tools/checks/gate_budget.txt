@@ -461,7 +461,9 @@ ctest.entries 43
 # `__rsub__`, `2 * c` through auto-reflection).
 # 1252 since Page, in en and ja (Page.socket with no page is an IOError; a
 # page's loop, which skips).
-docs.blocks 1252
+# 1254 since Scene's 3D lines, in en and ja (a row of lights, which skips:
+# it opens a window).
+docs.blocks 1254
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

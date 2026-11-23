@@ -856,7 +856,7 @@ inspect(match 9 {
 | `XML` | 12 | XMLをparse / 検索（XPathの部分集合） / stringify。大きな文書向けの遅延イベント列 |
 | `SQLite` | 10 | 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション） |
 | `Canvas` | 70 | ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御） |
-| `Scene` | 190 | 手続きジオメトリ向けのretained-mode 3Dレンダラ |
+| `Scene` | 192 | 手続きジオメトリ向けのretained-mode 3Dレンダラ |
 | `Net` | 22 | 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ） |
 | `Desktop` / `Webview` | 10 | ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで |
 | `Vector2` | 9 | グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる） |

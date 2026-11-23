@@ -1226,6 +1226,260 @@ println("unbiased: the ground shows through: {plain[0] > 0}")
 view.drop()
 EOS
 
+# 3D lines: a width in the output's pixels, so a 1-pixel line in a 4x target is
+# one pixel's worth of colour in every column wherever it falls between pixels,
+# and a diagonal's columns hold steady as it moves (whole-sample coverage made
+# one pulse by a fifth). Depth is tested on the axis, so a light just over the
+# ground keeps its width at a grazing angle, and a line's depth_bias counts the
+# slope of the surface under it, so it stays over a biased runway. Also the
+# material, the near-plane cut, the dot, fog, the window's own pass, and the
+# refusals.
+cat > scene_lines.cul <<'EOS'
+let view = Scene.View.new(64, 48, "scene lines")
+view.background(0, 0, 0)
+view.post_process(false)
+view.clip_planes(1.0, 10000.0)
+fn err(f) {
+  try {
+    f()
+    'accepted'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+Canvas.init(64, 48)
+# Show `tex` 1:1 at the window's top-left and read it back; or the window as
+# render_3d() drew it when `tex` is nil.
+fn shot(tex) {
+  if tex != nil {
+    view.begin_2d()
+    view.sprite(tex, 0.0, 0.0, tex.width(), tex.height())
+  }
+  view.screenshot("lines.png")
+  view.present()
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read("lines.png")).draw(0, 0)
+}
+# channel c (0 red, 1 green, 2 blue) of a pixel the last shot read
+fn at(x, y, c) { (Canvas.get_pixel(x, y) >> (8 * c)) & 255 }
+# the channel summed down each column of the w x h top-left
+fn columns(w, h, c) {
+  mut out = []
+  for x in 0..w {
+    mut s = 0
+    for y in 0..h { s += at(x, y, c) }
+    out.push(s)
+  }
+  out
+}
+fn total(w, h, c) {
+  mut n = 0
+  for y in 0..h {
+    for x in 0..w { n += at(x, y, c) }
+  }
+  n
+}
+fn lit(w, h, c) {
+  mut n = 0
+  for y in 0..h {
+    for x in 0..w { n += 1 if at(x, y, c) > 0 }
+  }
+  n
+}
+fn eye(t, y) { view.render_to(t, 0.0, y, 0.0, 0.0, y, -10.0, 0.0, 1.0, 0.0, 90.0) }
+
+# A level line across a 16 x 16 target, 10 m ahead, the eye rising by a tenth
+# of a pixel a frame: each column sums to one pixel of white at 4x, whatever the
+# line's place between two pixels; at 1x no column is left empty.
+let level = view.add_lines()
+level.segment(-100.0, 0.0, -10.0, 100.0, 0.0, -10.0).build()
+let t4 = view.render_target(16, 16, supersample: 4)
+let t1 = view.render_target(16, 16)
+let px = 20.0 / 16.0   # metres a target pixel spans at 10 m with a 90 degree view
+mut steady = true
+mut whole = true
+for k in 0..10 {
+  eye(t4, px * k * 0.1)
+  shot(t4)
+  for s in columns(16, 16, 0) { steady = false if s < 240 || s > 270 }
+  eye(t1, px * k * 0.1)
+  shot(t1)
+  for s in columns(16, 16, 0) { whole = false if s < 250 }
+}
+println("4x: one pixel's worth a column, at every offset: {steady}")
+println("1x: no column is empty: {whole}")
+level.hide()
+
+# A diagonal one never breaks, and each column away from the corners holds
+# its root-two pixels' worth at every offset.
+let diag = view.add_lines()
+diag.segment(-100.0, -100.0, -10.0, 100.0, 100.0, -10.0).build()
+mut unbroken = true
+mut diag_steady = true
+for k in 0..10 {
+  eye(t4, px * k * 0.13)
+  shot(t4)
+  let cols = columns(16, 16, 0)
+  unbroken = false if cols.contains(0)
+  for x in 4..12 { diag_steady = false if cols[x] < 345 || cols[x] > 375 }
+}
+println("diagonal unbroken: {unbroken} steady: {diag_steady}")
+diag.hide()
+
+# Three pixels wide is three pixels' worth.
+let wide = view.add_lines(3.0)
+wide.segment(-100.0, 0.0, -10.0, 100.0, 0.0, -10.0).build()
+eye(t4, px * 0.5)
+shot(t4)
+let w3 = columns(16, 16, 0)
+println("width 3: {w3.all(|s| s > 740 && s < 790)}")
+wide.hide()
+
+# Thinner than a pixel of the target: a pixel wide, as much fainter.
+let thin = view.add_lines(0.5)
+thin.segment(-100.0, 0.0, -10.0, 100.0, 0.0, -10.0).build()
+eye(t1, px * 0.3)
+shot(t1)
+println("half a pixel is half as bright: {columns(16, 16, 0).all(|s| s > 118 && s < 137)}")
+thin.hide()
+
+# The segments' colour times the material's; a box in front hides the line.
+let red_mat = view.add_material().rgb(255, 0, 0)
+let coloured = view.add_lines().material(red_mat)
+coloured.color(255, 255, 0).segment(-100.0, 0.0, -10.0, 100.0, 0.0, -10.0).build()
+let wall = view.add_box(2.0, 2.0, 0.1).move(-2.5, 0.0, -5.0).material(view.add_material().rgb(0, 0, 255).unlit())
+eye(t4, 0.0)
+shot(t4)
+let reds = columns(16, 16, 0)
+let greens = columns(16, 16, 1)
+println("material times segment colour: {reds[12] > 240 && greens[12] == 0}")
+println("hidden behind a box: {reds[4] == 0 && at(4, 8, 2) > 200}")
+# Without the depth test the box hides nothing.
+red_mat.depth_test(false)
+eye(t4, 0.0)
+shot(t4)
+println("depth_test(false) shows through: {columns(16, 16, 0)[4] > 240}")
+coloured.hide()
+wall.hide()
+
+# A line 0.3 m over the ground, 200 m off, from an eye 2 m up: the ground in
+# front of it covers the pixels below its axis, and still each column holds one
+# pixel's worth at every offset, the depth being tested on the axis.
+let floor = view.add_plane(2000.0, 2000.0).material(view.add_material().rgb(0, 0, 255).unlit())
+let low = view.add_lines()
+low.segment(-500.0, 0.3, -200.0, 500.0, 0.3, -200.0).build()
+mut grazing = true
+for k in 0..10 {
+  let y = 2.0 + k * 0.004
+  view.render_to(t4, 0.0, y, 0.0, 0.0, y - 1.5, -200.0, 0.0, 1.0, 0.0, 10.0)
+  shot(t4)
+  for s in columns(16, 16, 0) { grazing = false if s < 240 || s > 270 }
+}
+println("just over the ground, at a grazing angle: {grazing}")
+floor.hide()
+low.hide()
+
+# A runway drawn over the ground with a depth_bias, seen on a 3-degree
+# approach. A centreline lying on it with a stronger bias shows whole, as
+# bright as with no surfaces at all; a bar of lights 0.3 m over its near edge,
+# with the runway's own bias, is not lost to the seam with the ground.
+let grass = view.add_plane(20000.0, 20000.0).material(view.add_material().rgb(0, 0, 255).unlit())
+let strip = view.add_plane(45.0, 3000.0).move(0.0, 0.0, -1500.0)
+strip.material(view.add_material().rgb(0, 0, 255).unlit().depth_bias(-1.0, -4.0))
+let centre = view.add_lines().material(view.add_material().depth_bias(-1.0, -16.0))
+centre.segment(0.0, 0.05, 0.0, 0.0, 0.05, -3000.0).build()
+let edge = view.add_lines().material(view.add_material().depth_bias(-1.0, -4.0))
+edge.segment(-23.0, 0.3, 0.0, 23.0, 0.3, 0.0).build()
+let wide_view = view.render_target(64, 64, supersample: 4)
+fn approach(k) {
+  let d = 1500.0 - 0.37 * k
+  let h = d * Math.tan(3.0 * Math.pi / 180.0)
+  view.render_to(wide_view, 0.3, h, d, 0.3, 0.0, -600.0, 0.0, 1.0, 0.0, 20.0)
+  shot(wide_view)
+  total(64, 64, 0)
+}
+fn approach_sums() {
+  mut out = []
+  for k in 0..6 { out.push(approach(k)) }
+  out
+}
+edge.hide()
+let marked = approach_sums()
+edge.show()
+centre.hide()
+let lit_edge = approach_sums()
+grass.hide()
+strip.hide()
+let bare_edge = approach_sums()
+centre.show()
+edge.hide()
+let bare_marked = approach_sums()
+mut whole_mark = true
+mut whole_edge = true
+for k in 0..6 {
+  whole_mark = false if marked[k] < bare_marked[k] * 0.98
+  whole_edge = false if lit_edge[k] < bare_edge[k] * 0.98
+}
+println("a marking on a biased runway shows whole: {whole_mark}")
+println("a light on the runway's edge is not lost at the seam: {whole_edge}")
+centre.hide()
+
+# A segment from behind the eye to far ahead, on the ground below it: the part
+# in front draws, down the middle of the lower half.
+let runway = view.add_lines()
+runway.segment(0.0, 0.0, 50.0, 0.0, 0.0, -1000.0).build()
+view.render_to(t4, 0.0, 2.0, 0.0, 0.0, 2.0, -10.0, 0.0, 1.0, 0.0, 90.0)
+shot(t4)
+mut mid_rows = 0
+for y in 9..16 { mid_rows += 1 if at(7, y, 0) + at(8, y, 0) > 200 }
+println("a segment past the eye draws the part in front: {mid_rows == 7 && lit(16, 7, 0) == 0}")
+runway.hide()
+
+# Ends that meet draw a square dot of the width: four pixels' worth.
+let dot = view.add_lines(2.0)
+dot.segment(0.0, 0.0, -10.0, 0.0, 0.0, -10.0).build()
+view.render_to(t1, 0.1, 0.1, 0.0, 0.1, 0.1, -10.0, 0.0, 1.0, 0.0, 90.0)
+shot(t1)
+let dot_sum = total(16, 16, 0)
+println("a zero-length segment is a dot: {dot_sum > 980 && dot_sum < 1060}")
+dot.hide()
+
+# Fog reaches a line as it reaches a surface.
+let fogged = view.add_lines()
+fogged.segment(-100.0, 0.0, -10.0, 100.0, 0.0, -10.0).build()
+view.fog(1.0, 5.0, 0, 255, 0)
+eye(t4, 0.0)
+shot(t4)
+println("fog reaches a line: {columns(16, 16, 0)[8] < 10 && columns(16, 16, 1)[8] > 240}")
+view.fog(1.0e9, 2.0e9, 0, 0, 0)
+fogged.hide()
+
+# The window's own pass counts pixels of the window, at its supersample: about
+# one pixel's worth a column (the window's downsample is one bilinear tap, not
+# a box, so not exactly one), where a width left in the target's pixels would
+# be a quarter of that and one scaled twice four times it.
+let across = view.add_lines()
+across.segment(-1000.0, 0.0, -10.0, 1000.0, 0.0, -10.0).build()
+view.supersample(4)
+view.camera(0.0, 0.03, 0.0, 0.0, 0.03, -10.0, 0.0, 1.0, 0.0, 90.0)
+view.render_3d()
+shot(nil)
+println("render_3d: about one window pixel a column: {columns(64, 48, 0).all(|s| s > 128 && s < 510)}")
+across.hide()
+
+# Ends before and after build(); a segment on a mesh is refused.
+let counted = view.add_lines()
+counted.segment(0.0, 0.0, 0.0, 1.0, 0.0, 0.0).segment(0.0, 1.0, 0.0, 1.0, 1.0, 0.0)
+let before = counted.vertex_count()
+counted.build()
+println("ends {before} then {counted.vertex_count()}")
+let mesh = view.add_mesh().segment(0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+println("a mesh takes no segment: {mesh.vertex_count()}")
+println(err(fn () { view.add_lines(0.0) }))
+println(err(fn () { view.add_box(1.0, 1.0, 1.0).add_lines(-1.0) }))
+view.drop()
+EOS
+
 # A queued 2D draw names its texture or font atlas by GPU id until the frame is
 # presented, so a handle the script lets go of first must stay alive: the next
 # canvases take the freed ids, and the sprite and the text would show them.
@@ -1334,6 +1588,19 @@ run_pair tss "a 4x target is 16.0x16.0 to its readers: true" "1x is the default:
 echo "OK: a supersampled render target averages its edges and keeps the output's mip levels"
 run_pair bias "biased: the marking only: true" "unbiased: the ground shows through: true"
 echo "OK: depth_bias keeps a coplanar marking in front, near, far and grazing"
+run_pair lines "4x: one pixel's worth a column, at every offset: true" \
+  "1x: no column is empty: true" "diagonal unbroken: true steady: true" "width 3: true" \
+  "half a pixel is half as bright: true" \
+  "material times segment colour: true" "hidden behind a box: true" \
+  "depth_test(false) shows through: true" "just over the ground, at a grazing angle: true" \
+  "a marking on a biased runway shows whole: true" \
+  "a light on the runway's edge is not lost at the seam: true" \
+  "a segment past the eye draws the part in front: true" \
+  "a zero-length segment is a dot: true" "fog reaches a line: true" \
+  "render_3d: about one window pixel a column: true" "ends 4 then 4" "a mesh takes no segment: 0" \
+  "ValueError: add_lines: width must be a positive number of pixels, got 0" \
+  "ValueError: add_lines: width must be a positive number of pixels, got -1"
+echo "OK: 3D lines keep their width in output pixels, steady and unbroken in a 4x target"
 run_pair life "a sprite outlives its handle: true" "text outlives its font: true"
 echo "OK: a handle dropped before present() still draws what it was given"
 

@@ -33,6 +33,7 @@
 #include <stdlib/pixel_size.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cassert>
 #include <cstdarg>
@@ -115,7 +116,45 @@ void main() {
 }
 )";
 
-static const char* kFS = R"(#version 330
+// What every lit-pass fragment shader ends with, the lit one and the line one
+// alike: fog toward fogColor, and the alpha the pass wants. A line and a
+// surface at the same spot must fade and report depth the same way.
+static const char* kGLSL_FINISH = R"(
+uniform vec3 viewPos;     // camera position (specular + fog distance)
+uniform vec3 fogColor;
+uniform float fogStart;   // fogStart huge => fog effectively off
+uniform float fogEnd;
+uniform vec2 heightFog;   // (density, falloff); density 0 => distance fog above
+uniform float fogOn;      // 0: fog does not reach this surface
+uniform float opacity;    // 0..1: node x material; a surface's texture alpha and a line's edges multiply it
+// Which pass: 0 = opaque, alpha carries depth for the post stack; 1 = the
+// transparent pass, alpha is coverage and the blend leaves the destination's
+// alpha (the depth) alone.
+uniform float alphaMode;
+vec4 finish(vec3 col, vec3 world, float cover) {
+  // Distance fog toward fogColor (off when fogStart is set very large).
+  float dist = length(world - viewPos);
+  float fogF = clamp((dist - fogStart) / max(fogEnd - fogStart, 1.0), 0.0, 1.0);
+  if (heightFog.x > 0.0) {
+    // Exponential height fog: density(y) = d0 * exp(-k * y). Optical depth
+    // along the eye-to-fragment line is d0 * dist * (exp(-k*yE) - exp(-k*yP))
+    // / (k * (yP - yE)); written as exp(-k*yE) * (1 - exp(-e)) / e with
+    // e = k * (yP - yE), whose e -> 0 limit (a level line, or k = 0) is 1.
+    float k = heightFog.y;
+    float e = k * (world.y - viewPos.y);
+    float g = abs(e) < 1e-3 ? 1.0 - 0.5 * e : (1.0 - exp(-e)) / e;
+    float tau = heightFog.x * dist * exp(min(-k * viewPos.y, 60.0)) * g;
+    fogF = 1.0 - exp(-tau);
+  }
+  col = mix(col, fogColor, fogF * fogOn);
+  // Opaque pass: alpha carries linear camera depth (0=near .. 1=far) for the
+  // post pass's SSAO + depth-of-field — packing it here avoids a second
+  // sampler on macOS. Transparent pass: alpha is the coverage the blend uses.
+  return alphaMode < 0.5 ? vec4(col, clamp(dist / 3000.0, 0.0, 1.0)) : vec4(col, cover);
+}
+)";
+
+static const char* kFS = R"(
 in vec3 fragNormal;
 in vec3 fragWorld;
 in vec2 fragUV;
@@ -139,25 +178,14 @@ uniform vec4 colDiffuse;
 uniform vec3 lightDir;
 uniform vec3 lightColor;
 uniform vec3 ambient;
-uniform vec3 viewPos;     // camera position (specular + fog distance)
-uniform vec3 fogColor;
-uniform float fogStart;   // fogStart huge => fog effectively off
-uniform float fogEnd;
-uniform vec2 heightFog;   // (density, falloff); density 0 => distance fog above
 uniform float metallic;   // 0 dielectric .. 1 metal
 uniform float roughness;  // 0 glossy .. 1 matte
 uniform vec3 skyTop;      // zenith colour (also drives reflections)
 uniform vec3 skyBot;      // horizon colour
 // Per-material (see Material): coverage, and what a surface opts out of.
-uniform float opacity;    // 0..1, multiplies the texture's alpha
 uniform float cutoff;     // > 0: discard where coverage is below it (leaf cards)
 uniform vec3 emissive;    // added after lighting, before fog
 uniform float unlit;      // 1: the base colour as is, no light or reflection
-uniform float fogOn;      // 0: fog does not reach this surface
-// Which pass: 0 = opaque, alpha carries depth for the post stack; 1 = the
-// transparent pass, alpha is coverage and the blend leaves the destination's
-// alpha (the depth) alone.
-uniform float alphaMode;
 out vec4 finalColor;
 
 // Analytic environment for image-based reflections: the same gradient sky we
@@ -250,30 +278,169 @@ void main() {
   // A branch, not a mix: a non-finite lit term would survive `mix(.., 0)`.
   if (unlit > 0.5) col = base;
   col += emissive;
-
-  // Distance fog toward fogColor (off when fogStart is set very large).
-  float dist = length(fragWorld - viewPos);
-  float fogF = clamp((dist - fogStart) / max(fogEnd - fogStart, 1.0), 0.0, 1.0);
-  if (heightFog.x > 0.0) {
-    // Exponential height fog: density(y) = d0 * exp(-k * y). Optical depth
-    // along the eye-to-fragment line is d0 * dist * (exp(-k*yE) - exp(-k*yP))
-    // / (k * (yP - yE)); written as exp(-k*yE) * (1 - exp(-e)) / e with
-    // e = k * (yP - yE), whose e -> 0 limit (a level line, or k = 0) is 1.
-    float k = heightFog.y;
-    float e = k * (fragWorld.y - viewPos.y);
-    float g = abs(e) < 1e-3 ? 1.0 - 0.5 * e : (1.0 - exp(-e)) / e;
-    float tau = heightFog.x * dist * exp(min(-k * viewPos.y, 60.0)) * g;
-    fogF = 1.0 - exp(-tau);
-  }
-  col = mix(col, fogColor, fogF * fogOn);
-
-  // Opaque pass: alpha carries linear camera depth (0=near .. 1=far) for the
-  // post pass's SSAO + depth-of-field — packing it here avoids a second
-  // sampler on macOS. Transparent pass: alpha is the coverage the blend uses.
-  finalColor = alphaMode < 0.5 ? vec4(col, clamp(dist / 3000.0, 0.0, 1.0))
-                               : vec4(col, cover);
+  finalColor = finish(col, fragWorld, cover);
 }
 )";
+
+// A 3D line (Shape::Lines): each segment is a quad the vertex shader spreads
+// across the screen to a width in pixels, as three.js's LineSegments2 does —
+// GL_LINES is one pixel wide on a core profile, which a supersampled target
+// would average down to a quarter of a pixel. Each of a quad's six vertices
+// carries its own end, the other end (in the normal) and which corner it is
+// (in the UV). An end behind the near plane is moved along the segment to it
+// first, so the part in front still projects with its true direction.
+//
+// The quad reaches half a pixel past the line all round, and the fragment
+// shader covers each pixel by the share of it the line takes (a box filter),
+// so a line's brightness does not jump with where it falls between pixels —
+// whole-sample coverage made a diagonal pulse by a fifth as it moved.
+//
+// What hides a line is decided on its axis, not where its width reaches: a
+// row of lights just above the ground, seen at a grazing angle, would lose
+// the lower half of its width to the nearer ground below it, by an amount
+// that changed with the fraction of a pixel it sat at. So the hardware depth
+// test is off for lines, and the fragment shader compares the depth of the
+// axis point beside it with a copy of the pass's depth (View::copy_depth).
+//
+// Where a fragment sits relative to its segment is worked out from
+// gl_FragCoord against the segment's two ends on the screen, handed over
+// flat, not interpolated: a quad the near plane cuts is re-triangulated by
+// the clipper, and llvmpipe's noperspective values then drifted.
+static const char* kVS_LINE = R"(#version 330
+in vec3 vertexPosition;   // this end
+in vec3 vertexNormal;     // the other end
+in vec2 vertexTexCoord;   // x: side (-1 / +1); y: 0 at the segment's start, 1 at its end
+in vec4 vertexColor;
+uniform mat4 matModel;
+uniform mat4 matView;
+uniform mat4 matProjection;
+uniform vec2 targetSize;  // the pass's target, in its own pixels
+uniform float halfWidth;  // in the target's pixels
+uniform float nearPlane;
+out vec3 fragWorld;
+out vec4 fragColor;
+// The segment's start and end in window x, y (target pixels) and depth; every
+// vertex of a segment works out the same two, so the provoking one is any.
+flat out vec3 segStart;
+flat out vec3 segEnd;
+void main() {
+  vec4 w0 = matModel * vec4(vertexPosition, 1.0);
+  vec4 w1 = matModel * vec4(vertexNormal, 1.0);
+  vec4 a = matView * w0, b = matView * w1;   // eye space: -z is ahead
+  fragColor = vertexColor;
+  float lim = -nearPlane;
+  if (a.z > lim && b.z > lim) {   // all of it behind the eye: outside the clip volume
+    fragWorld = w0.xyz;
+    segStart = segEnd = vec3(0.0);
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  if (a.z > lim) {
+    float t = (lim - a.z) / (b.z - a.z);
+    a = mix(a, b, t);
+    w0 = mix(w0, w1, t);
+  }
+  if (b.z > lim) b = mix(b, a, (lim - b.z) / (a.z - b.z));
+  vec4 ca = matProjection * a, cb = matProjection * b;
+  vec2 halfSize = 0.5 * targetSize;
+  vec2 sa = ca.xy / ca.w * halfSize, sb = cb.xy / cb.w * halfSize;
+  // d runs start to end whichever end this is; a segment whose ends meet on
+  // the screen has no direction and draws a square dot.
+  float toward = vertexTexCoord.y < 0.5 ? 1.0 : -1.0;
+  vec2 d = (sb - sa) * toward;
+  float len = length(d);
+  d = len > 1e-4 ? d / len : vec2(1.0, 0.0);
+  // Across by the side, and out past this end by half the width (a square
+  // cap, so the segments of a polyline meet without a notch), each plus the
+  // half pixel the coverage ramps down over.
+  float reach = halfWidth + 0.5;
+  vec2 off = (vec2(-d.y, d.x) * vertexTexCoord.x - d * toward) * reach;
+  vec3 wa = vec3(sa + halfSize, ca.z / ca.w * 0.5 + 0.5);
+  vec3 wb = vec3(sb + halfSize, cb.z / cb.w * 0.5 + 0.5);
+  segStart = toward > 0.0 ? wa : wb;
+  segEnd = toward > 0.0 ? wb : wa;
+  ca.xy += off / halfSize * ca.w;
+  gl_Position = ca;
+  fragWorld = w0.xyz;
+}
+)";
+
+static const char* kFS_LINE = R"(
+in vec3 fragWorld;
+in vec4 fragColor;
+flat in vec3 segStart;
+flat in vec3 segEnd;
+uniform sampler2D texture0;   // the pass's depth so far (View::copy_depth)
+uniform vec2 targetSize;
+uniform vec4 colDiffuse;
+uniform float halfWidth;
+uniform float depthTest;  // 0: the material's depth_test(false)
+uniform vec2 depthBias;   // the material's depth_bias: slope, and units in window depth
+out vec4 finalColor;
+float depthAt(ivec2 p) {
+  return texelFetch(texture0, clamp(p, ivec2(0), ivec2(targetSize) - 1), 0).r;
+}
+// The depth slope of the surface at `at` along `step`, from the side that
+// carries on as a plane through it (Turanszki's choice when rebuilding normals
+// from depth): an outline has a jump on one side, and so has the seam of two
+// coplanar surfaces only one of which is biased.
+float slopeAlong(ivec2 at, ivec2 step, float c) {
+  float n1 = depthAt(at - step), n2 = depthAt(at - 2 * step);
+  float p1 = depthAt(at + step), p2 = depthAt(at + 2 * step);
+  return abs(2.0 * n1 - n2 - c) < abs(2.0 * p1 - p2 - c) ? abs(c - n1) : abs(p1 - c);
+}
+float slopeAt(ivec2 p) {
+  float c = depthAt(p);
+  return max(slopeAlong(p, ivec2(1, 0), c), slopeAlong(p, ivec2(0, 1), c));
+}
+void main() {
+  // Along from the start and across from the axis, in target pixels; the
+  // axis point beside this fragment, its depth carried on along the segment
+  // (NDC depth is affine along a projected line).
+  vec2 ab = segEnd.xy - segStart.xy;
+  float span = length(ab);
+  vec2 d = span > 1e-4 ? ab / span : vec2(1.0, 0.0);
+  vec2 rel = gl_FragCoord.xy - segStart.xy;
+  float along = dot(rel, d), across = dot(rel, vec2(-d.y, d.x));
+  vec3 axis = vec3(segStart.xy + d * along,
+                   span > 1e-4 ? mix(segStart.z, segEnd.z, along / span) : segStart.z);
+  if (depthTest > 0.5) {
+    // GL_LEQUAL on the axis point, offset as glPolygonOffset offsets a
+    // surface: slope x the depth slope of the surface there + units. A line
+    // given the bias of the surface it lies on stays in front of it. The
+    // slope is the steepest of the axis pixel's and its four neighbours': at
+    // the corner of a biased surface no side of the pixel itself is plane.
+    ivec2 at = ivec2(axis.xy);
+    float dz = 0.0;
+    if (depthBias.x != 0.0) {   // the slope costs 45 reads; most lines have none
+      dz = slopeAt(at);
+      dz = max(dz, max(slopeAt(at + ivec2(1, 0)), slopeAt(at - ivec2(1, 0))));
+      dz = max(dz, max(slopeAt(at + ivec2(0, 1)), slopeAt(at - ivec2(0, 1))));
+    }
+    if (axis.z + depthBias.x * dz + depthBias.y > depthAt(at)) discard;
+  }
+  float cover = clamp(halfWidth + 0.5 - abs(across), 0.0, 1.0) *
+                clamp(halfWidth + 0.5 + min(along, span - along), 0.0, 1.0);
+  finalColor = finish(fragColor.rgb * colDiffuse.rgb, fragWorld, opacity * cover);
+}
+)";
+
+// A lit-pass fragment shader: the version line, the shared ending, the body.
+static std::string with_finish(const char* body) {
+  return std::string("#version 330\n") + kGLSL_FINISH + body;
+}
+
+// Where one shader keeps the uniforms of kGLSL_FINISH (and its opacity), so
+// the View sets the fog and the eye on every shader that ends with it.
+struct FinishLocs {
+  int viewpos = -1, fogcol = -1, fogstart = -1, fogend = -1, heightfog = -1;
+  int fogon = -1, alphamode = -1, opacity = -1;
+  static FinishLocs of(const Shader& sh) {
+    auto at = [&](const char* n) { return GetShaderLocation(sh, n); };
+    return FinishLocs{at("viewPos"), at("fogColor"), at("fogStart"), at("fogEnd"),
+                      at("heightFog"), at("fogOn"), at("alphaMode"), at("opacity")};
+  }
+};
 
 // Depth pass shaders. We write depth into the COLOR target as a packed RGBA
 // value and sample THAT in the lit pass — sampling a real depth texture as a
@@ -401,7 +568,7 @@ static RenderTexture2D LoadShadowmap(int w, int h) {
   return LoadRenderTexture(w, h);
 }
 
-enum class Shape { Group, Box, Sphere, Cylinder, Plane, Mesh };
+enum class Shape { Group, Box, Sphere, Cylinder, Plane, Mesh, Lines };
 
 // GL names belong to the context that made them, and a View owns its context:
 // closing one and opening the next starts the numbering over, so a mesh built
@@ -954,6 +1121,12 @@ class Node : public std::enable_shared_from_this<Node> {
   uint64_t mesh_epoch_ = 0;   // the GL context mesh_ was uploaded under
   float mesh_radius_ = 0;     // farthest pushed vertex, for culling (build())
 
+  // 3D-line accumulation (shape == Lines): two ends' xyz and one rgba a
+  // segment, kept apart from the mesh's arrays so neither builder can feed the other.
+  std::vector<float> lv;
+  std::vector<unsigned char> lc;
+  double line_width_ = 1;     // in the pass's output pixels (View::emit)
+
   // local-transform cache: recomputed only when a setter dirties it, so a
   // static subtree's matrix is built once, not 3x/frame across the passes.
   mutable Matrix cached_local_{};
@@ -1040,7 +1213,11 @@ class Node : public std::enable_shared_from_this<Node> {
   }
   // Vertices a custom mesh holds (pushed, or uploaded) — so a builder can start
   // a new node before the 65535 cap.
-  int64_t vertex_count() const { return mesh_built ? mesh_.vertexCount : (int64_t)(mv.size() / 3); }
+  int64_t vertex_count() const {
+    // A line's ends, two a segment, whatever the quads it uploads as.
+    if (shape == Shape::Lines) return mesh_built ? mesh_.vertexCount / 3 : (int64_t)(lv.size() / 3);
+    return mesh_built ? mesh_.vertexCount : (int64_t)(mv.size() / 3);
+  }
   // Position after every ancestor's transform — where the node is in the world.
   Matrix world() const {
     auto p = parent_.lock();
@@ -1077,6 +1254,16 @@ class Node : public std::enable_shared_from_this<Node> {
   }
   Node& tri(int64_t a, int64_t b, int64_t c) {
     mi.push_back(a); mi.push_back(b); mi.push_back(c);
+    return *this;
+  }
+  // One segment of a lines node, its ends in the colour color() last set.
+  Node& segment(double x0, double y0, double z0, double x1, double y1, double z1) {
+    if (shape != Shape::Lines) {
+      TraceLog(LOG_ERROR, "Scene: segment() on a node add_lines() did not make — ignored.");
+      return *this;
+    }
+    lv.insert(lv.end(), {(float)x0, (float)y0, (float)z0, (float)x1, (float)y1, (float)z1});
+    lc.insert(lc.end(), {cur_color_.r, cur_color_.g, cur_color_.b, cur_color_.a});
     return *this;
   }
   // The whole mesh from packed little-endian bytes (String.pack): positions and
@@ -1117,11 +1304,13 @@ class Node : public std::enable_shared_from_this<Node> {
     return build();
   }
   Node& build() {
-    if (mv.empty() || mi.empty()) return *this;   // nothing pushed → no-op (no GL upload)
+    // nothing pushed → no-op (no GL upload)
+    if (shape == Shape::Lines ? lv.empty() : mv.empty() || mi.empty()) return *this;
     if (!IsWindowReady()) {   // no context to upload into; the vectors keep
-      TraceLog(LOG_ERROR, "Scene: build() needs an open View — mesh not built.");
+      TraceLog(LOG_ERROR, "Scene: build() needs an open View — not built.");
       return *this;
     }
+    if (shape == Shape::Lines) return build_lines();
     if (mv.size() / 3 > kMeshMaxVertices) {
       TraceLog(LOG_ERROR,
                "Scene: mesh has %zu vertices; raylib's 16-bit index buffer "
@@ -1162,26 +1351,48 @@ class Node : public std::enable_shared_from_this<Node> {
     for (size_t i = 0; i < mi.size(); i++) m.indices[i] = (unsigned short)mi[i];
     UploadMesh(&m, false);
     share_absent(m, mn.empty(), mt.empty());
-    m.vertices = nullptr;
-    m.normals = nullptr;
-    m.texcoords = nullptr;
-    m.colors = nullptr;
-    float r2 = 0;
-    for (size_t i = 0; i + 2 < mv.size(); i += 3)
-      r2 = std::max(r2, mv[i] * mv[i] + mv[i + 1] * mv[i + 1] + mv[i + 2] * mv[i + 2]);
-    mesh_radius_ = std::sqrt(r2);
-    if (mesh_built) unload_mesh();   // rebuilt: drop the older upload
-    mesh_ = m;
-    mesh_epoch_ = gl_epoch();
-    mesh_built = true;
+    adopt(m, mv);
     // the data now lives in the GPU mesh; release the CPU-side build buffers
     std::vector<float>().swap(mv);
     std::vector<float>().swap(mn);
     std::vector<float>().swap(mt);
     std::vector<unsigned char>().swap(mc);
     std::vector<long>().swap(mi);
-    cur_color_ = WHITE;
     has_color_ = false;
+    return *this;
+  }
+  // A lines node's build(): six vertices a segment (two triangles, unindexed,
+  // so no 16-bit cap), each with its end, the other end and its corner.
+  Node& build_lines() {
+    assert(lc.size() / 4 == lv.size() / 6);
+    const size_t segs = lv.size() / 6;
+    std::vector<float> pos, other, uv;
+    std::vector<unsigned char> rgba;
+    pos.reserve(segs * 18); other.reserve(segs * 18); uv.reserve(segs * 12); rgba.reserve(segs * 24);
+    // (end, side): the quad start-, start+, end+ and start-, end+, end-.
+    static constexpr int kCorner[6][2] = {{0, -1}, {0, 1}, {1, 1}, {0, -1}, {1, 1}, {1, -1}};
+    for (size_t s = 0; s < segs; s++) {
+      const float* p = &lv[s * 6];
+      const unsigned char* c = &lc[s * 4];
+      for (const auto& k : kCorner) {
+        int e = k[0];
+        pos.insert(pos.end(), p + 3 * e, p + 3 * e + 3);
+        other.insert(other.end(), p + 3 * (1 - e), p + 3 * (1 - e) + 3);
+        uv.insert(uv.end(), {(float)k[1], (float)e});
+        rgba.insert(rgba.end(), c, c + 4);
+      }
+    }
+    ::Mesh m{};
+    m.vertexCount = (int)(segs * 6);
+    m.triangleCount = (int)(segs * 2);
+    m.vertices = pos.data();
+    m.normals = other.data();
+    m.texcoords = uv.data();
+    m.colors = rgba.data();
+    UploadMesh(&m, false);
+    adopt(m, lv);
+    std::vector<float>().swap(lv);
+    std::vector<unsigned char>().swap(lc);
     return *this;
   }
 
@@ -1202,6 +1413,12 @@ class Node : public std::enable_shared_from_this<Node> {
   static std::shared_ptr<Node> make_mesh() {
     auto n = std::make_shared<Node>(); n->shape = Shape::Mesh; return n;
   }
+  static std::shared_ptr<Node> make_lines(double width) {
+    if (!std::isfinite(width) || width <= 0)
+      throw culebra::CulebraError("ValueError",
+          culebra::format("add_lines: width must be a positive number of pixels, got {}", width), 0, 0);
+    auto n = std::make_shared<Node>(); n->shape = Shape::Lines; n->line_width_ = width; return n;
+  }
 
   std::shared_ptr<Node> child() { return push(std::make_shared<Node>()); }
   std::shared_ptr<Node> add_box(double w, double h, double d) { return push(make_box(w, h, d)); }
@@ -1209,6 +1426,7 @@ class Node : public std::enable_shared_from_this<Node> {
   std::shared_ptr<Node> add_cylinder(double r, double h) { return push(make_cylinder(r, h)); }
   std::shared_ptr<Node> add_plane(double w, double d) { return push(make_plane(w, d)); }
   std::shared_ptr<Node> add_mesh() { return push(make_mesh()); }
+  std::shared_ptr<Node> add_lines(double width) { return push(make_lines(width)); }
 
   double x() const { return px; }
   double y() const { return py; }
@@ -1242,6 +1460,12 @@ class Node : public std::enable_shared_from_this<Node> {
     }
   }
 
+  // Built by the script (vertices or segments), not a unit primitive scaled to the shape.
+  bool own_mesh() const { return shape == Shape::Mesh || shape == Shape::Lines; }
+  // Drawn to a width in screen pixels (a line), not as a surface in the
+  // world: no shadow, the transparent pass, its own depth test (View::emit).
+  bool screen_space() const { return shape == Shape::Lines; }
+
   // The mesh this node draws with, or null for a group / a mesh that has no
   // GL side (never built, or built under a View that is gone).
   const Mesh* mesh_for(const RenderCtx& ctx) const {
@@ -1250,7 +1474,8 @@ class Node : public std::enable_shared_from_this<Node> {
       case Shape::Sphere: return &ctx.sphere;
       case Shape::Cylinder: return &ctx.cyl;
       case Shape::Plane: return &ctx.plane;
-      case Shape::Mesh: return mesh_live() ? &mesh_ : nullptr;
+      case Shape::Mesh:
+      case Shape::Lines: return mesh_live() ? &mesh_ : nullptr;
       case Shape::Group: return nullptr;
     }
     return nullptr;
@@ -1262,11 +1487,13 @@ class Node : public std::enable_shared_from_this<Node> {
   void render(const Matrix& parent, const RenderCtx& ctx) const {
     if (!visible) return;
     Matrix world = MatrixMultiply(local(), parent);          // children inherit this
-    bool casts = !mat || (mat->casts_shadow_ &&
-                          (!mat->transparent(opacity_) || mat->cutoff > 0.0f));
+    // A line has no surface to cast from (its width is in screen pixels).
+    bool casts = !screen_space() &&
+                 (!mat || (mat->casts_shadow_ &&
+                           (!mat->transparent(opacity_) || mat->cutoff > 0.0f)));
     if (casts)
       if (const Mesh* m = mesh_for(ctx))
-        DrawMesh(*m, ctx.mat, shape == Shape::Mesh ? world : MatrixMultiply(shape_scale(), world));
+        DrawMesh(*m, ctx.mat, own_mesh() ? world : MatrixMultiply(shape_scale(), world));
     for (const auto& ch : children) ch->render(world, ctx);
   }
 
@@ -1279,7 +1506,8 @@ class Node : public std::enable_shared_from_this<Node> {
       case Shape::Sphere: return radius;
       case Shape::Cylinder: return std::sqrt(radius * radius + h * h * 0.25);
       case Shape::Plane: return 0.5 * std::sqrt(w * w + d * d);
-      case Shape::Mesh: return mesh_radius_;
+      case Shape::Mesh:
+      case Shape::Lines: return mesh_radius_;
       case Shape::Group: return 0;
     }
     return 0;
@@ -1309,14 +1537,17 @@ class Node : public std::enable_shared_from_this<Node> {
       }
       if (!culled) {
         int64_t op = mat ? opacity_ * mat->opacity_ / 255 : opacity_;
+        // A line blends its smoothed edges over what is behind it, so it is
+        // always drawn with the transparent surfaces.
+        bool transparent = screen_space() || (mat ? mat->transparent(opacity_) : op < 255);
         out.push_back(DrawItem{
             .node = this,
             .world = world,
-            .draw = shape == Shape::Mesh ? world : MatrixMultiply(shape_scale(), world),
+            .draw = own_mesh() ? world : MatrixMultiply(shape_scale(), world),
             .mat = mat.get(),
             .order = order,
             .depth = Vector3Distance(pos, cam.position),
-            .transparent = mat ? mat->transparent(opacity_) : op < 255,
+            .transparent = transparent,
             .opacity = (unsigned char)op});
       }
     }
@@ -1328,6 +1559,25 @@ class Node : public std::enable_shared_from_this<Node> {
     n->parent_ = shared_from_this();
     children.push_back(n);
     return n;
+  }
+
+  // Take a just-uploaded mesh as this node's, replacing an earlier upload,
+  // bounded by the xyz it was built from. raylib's pointers into our arrays
+  // are cleared: the vertex data was never raylib's to free (unload_mesh).
+  void adopt(::Mesh m, const std::vector<float>& xyz) {
+    m.vertices = nullptr;
+    m.normals = nullptr;
+    m.texcoords = nullptr;
+    m.colors = nullptr;
+    float r2 = 0;
+    for (size_t i = 0; i + 2 < xyz.size(); i += 3)
+      r2 = std::max(r2, xyz[i] * xyz[i] + xyz[i + 1] * xyz[i + 1] + xyz[i + 2] * xyz[i + 2]);
+    mesh_radius_ = std::sqrt(r2);
+    if (mesh_built) unload_mesh();   // rebuilt: drop the older upload
+    mesh_ = m;
+    mesh_epoch_ = gl_epoch();
+    mesh_built = true;
+    cur_color_ = WHITE;
   }
 
   // Has this mesh's GL side survived? It dies with the View that uploaded it
@@ -1387,6 +1637,15 @@ static Mesh poles_to_y(Mesh m) {   // -90 degrees about X: (x, y, z) -> (x, z, -
   return push_buffer(m, 2, m.normals, 3);
 }
 
+// One lit pass: its target, whether the post stack reads depth from the
+// target's alpha (render_3d), and how many of the target's pixels make one
+// of the output's (its supersample factor) — the unit a line's width is in.
+struct Pass {
+  const RenderTexture2D& rt;
+  bool depth_in_alpha;
+  float px_scale;
+};
+
 class View {
  public:
   View(int64_t w, int64_t h, std::string title) {
@@ -1411,27 +1670,27 @@ class View {
     cam_.up = Vector3{0, 1, 0};
     cam_.fovy = 55;
     cam_.projection = CAMERA_PERSPECTIVE;
-    lit_ = LoadShaderFromMemory(kVS, kFS);
+    lit_ = LoadShaderFromMemory(kVS, with_finish(kFS).c_str());
+    lit_fin_ = FinishLocs::of(lit_);
+    line_ = LoadShaderFromMemory(kVS_LINE, with_finish(kFS_LINE).c_str());
+    line_fin_ = FinishLocs::of(line_);
+    loc_line_target_ = GetShaderLocation(line_, "targetSize");
+    loc_line_halfwidth_ = GetShaderLocation(line_, "halfWidth");
+    loc_line_near_ = GetShaderLocation(line_, "nearPlane");
+    loc_line_dtest_ = GetShaderLocation(line_, "depthTest");
+    loc_line_dbias_ = GetShaderLocation(line_, "depthBias");
     loc_dir_ = GetShaderLocation(lit_, "lightDir");
     loc_lcol_ = GetShaderLocation(lit_, "lightColor");
     loc_amb_ = GetShaderLocation(lit_, "ambient");
     loc_lvp0_ = GetShaderLocation(lit_, "lightVP0");
     loc_lvp1_ = GetShaderLocation(lit_, "lightVP1");
-    loc_viewpos_ = GetShaderLocation(lit_, "viewPos");
-    loc_fogcol_ = GetShaderLocation(lit_, "fogColor");
-    loc_fogstart_ = GetShaderLocation(lit_, "fogStart");
-    loc_fogend_ = GetShaderLocation(lit_, "fogEnd");
-    loc_heightfog_ = GetShaderLocation(lit_, "heightFog");
     loc_metallic_ = GetShaderLocation(lit_, "metallic");
     loc_rough_ = GetShaderLocation(lit_, "roughness");
     loc_skytop_ = GetShaderLocation(lit_, "skyTop");
     loc_skybot_ = GetShaderLocation(lit_, "skyBot");
-    loc_opacity_ = GetShaderLocation(lit_, "opacity");
     loc_cutoff_ = GetShaderLocation(lit_, "cutoff");
     loc_emissive_ = GetShaderLocation(lit_, "emissive");
     loc_unlit_ = GetShaderLocation(lit_, "unlit");
-    loc_fogon_ = GetShaderLocation(lit_, "fogOn");
-    loc_alphamode_ = GetShaderLocation(lit_, "alphaMode");
     loc_uv_ = GetShaderLocation(lit_, "uvXform");
     loc_nstrength_ = GetShaderLocation(lit_, "normalStrength");
     loc_lodbias_ = GetShaderLocation(lit_, "lodBias");
@@ -1464,6 +1723,8 @@ class View {
     mat_.maps[MATERIAL_MAP_NORMAL].texture = shadowmap1_.texture;
     depth_mat_ = LoadMaterialDefault();
     depth_mat_.shader = depth_;
+    line_mat_ = LoadMaterialDefault();
+    line_mat_.shader = line_;
     light_.up = Vector3{0, 1, 0};
     light_.projection = CAMERA_ORTHOGRAPHIC;
     cube_ = remap_uv(GenMeshCube(1, 1, 1), false, false, true);
@@ -1487,6 +1748,8 @@ class View {
       UnloadRenderTexture(post_rt_);
       UnloadMesh(cube_); UnloadMesh(sphere_); UnloadMesh(cyl_); UnloadMesh(plane_);
       UnloadShader(lit_);
+      UnloadShader(line_);
+      for (const DepthCopy& c : depth_copies_) rlUnloadTexture(c.tex);
       UnloadShader(depth_);
       UnloadShader(post_);
       UnloadShader(box_);
@@ -1499,6 +1762,7 @@ class View {
     // block above owns and has already unloaded.
     MemFree(mat_.maps);
     MemFree(depth_mat_.maps);
+    MemFree(line_mat_.maps);
   }
 
   void target_fps(int64_t fps) { SetTargetFPS((int)fps); }
@@ -1881,14 +2145,14 @@ class View {
     cam.projection = CAMERA_PERSPECTIVE;
     // The eye drives specular and fog in the lit shader; set for this pass,
     // put back for the main one (render_3d sets it too, belt and braces).
-    SetShaderValue(lit_, loc_viewpos_, &cam.position, SHADER_UNIFORM_VEC3);
+    set_view_pos(cam.position);
     // Alpha is coverage here, not depth: no post pass reads this target, and a
     // sprite() of it (or anything else blending by alpha) must see the image
     // as opaque, not as 0.4% of itself.
     int n = tex.supersample();
-    lit_target(tex.draw_target(), cam, /*depth_in_alpha=*/false, std::log2((float)n));
+    lit_target(Pass{tex.draw_target(), /*depth_in_alpha=*/false, (float)n}, cam, std::log2((float)n));
     if (n > 1) resolve(tex, n);
-    SetShaderValue(lit_, loc_viewpos_, &cam_.position, SHADER_UNIFORM_VEC3);
+    set_view_pos(cam_.position);
   }
 
   // Average a supersampled target's n x n blocks into the texture it is read
@@ -1957,6 +2221,7 @@ class View {
   std::shared_ptr<Node> add_cylinder(double r, double h) { return push(Node::make_cylinder(r, h)); }
   std::shared_ptr<Node> add_plane(double w, double d) { return push(Node::make_plane(w, d)); }
   std::shared_ptr<Node> add_mesh() { return push(Node::make_mesh()); }
+  std::shared_ptr<Node> add_lines(double width) { return push(Node::make_lines(width)); }
 
   void camera(double px, double py, double pz, double tx, double ty, double tz,
               double ux, double uy, double uz, double fov) {
@@ -1995,7 +2260,7 @@ class View {
   // so opaque alpha carries depth) and render_to() (whose target is an image,
   // so alpha is coverage). The frustum and the camera's rotation come from the
   // matrices BeginMode3D just installed.
-  void lit_pass(const Camera3D& cam, bool depth_in_alpha) {
+  void lit_pass(const Camera3D& cam, const Pass& pass) {
     items_.clear();
     auto ctx = pass_ctx(mat_);
     Matrix id = MatrixIdentity();
@@ -2006,14 +2271,14 @@ class View {
     cam_rot.m12 = cam_rot.m13 = cam_rot.m14 = 0;
     cam_rot.m3 = cam_rot.m7 = cam_rot.m11 = 0;
     for (const auto& n : roots_) n->collect(id, ctx, cam, cam_rot, culling_ ? &fr : nullptr, items_);
-    emit(items_, depth_in_alpha);
+    emit(items_, pass);
   }
 
   // The lit pass, second half: sort the collected items (see DrawItem) and
   // draw them, setting only the GL state and uniforms that change between one
   // item and the next. DrawMesh is unbatched on GL 3.3, so a state change
   // between two draws lands exactly between them.
-  void emit(std::vector<DrawItem>& items, bool depth_in_alpha) {
+  void emit(std::vector<DrawItem>& items, const Pass& pass) {
     std::stable_sort(items.begin(), items.end(), [](const DrawItem& a, const DrawItem& b) {
       if (a.order != b.order) return a.order < b.order;
       if (a.transparent != b.transparent) return !a.transparent;
@@ -2030,12 +2295,20 @@ class View {
     // `over` surface through it and eat the depth the post stack reads.
     bool blend_set = false;
     Blend blend = Blend::Over;
+    // An opaque surface has written depth since the last copy_depth. A
+    // transparent one is left out: drawn back to front, what it puts before a
+    // line is mostly behind it, and a full-target copy for every pane of
+    // glass between two lines would cost more than that.
+    bool depth_stale = true;
     for (const DrawItem& it : items) {
       const Material* m = it.mat;
-      bool want_dw = m ? m->depth_write_ : true;
-      bool want_dt = m ? m->depth_test_ : true;
-      bool want_cull = !(m && m->double_sided_);
-      Vector2 want_bias = m ? m->depth_bias_ : Vector2{0, 0};
+      // A line tests depth in its shader, on its axis, and writes none; its
+      // quad faces the eye whichever way its segment runs.
+      bool surface = !it.node->screen_space();
+      bool want_dw = surface && (m ? m->depth_write_ : true);
+      bool want_dt = surface && (m ? m->depth_test_ : true);
+      bool want_cull = surface && !(m && m->double_sided_);
+      Vector2 want_bias = surface && m ? m->depth_bias_ : Vector2{0, 0};
       Blend want_blend = m ? m->blend_ : Blend::Over;
       if (it.transparent != blending) {
         if (it.transparent) rlEnableColorBlend(); else rlDisableColorBlend();
@@ -2053,38 +2326,18 @@ class View {
         set_depth_bias(want_bias);
         depth_bias = want_bias;
       }
-
-      // Per-item uniforms and the diffuse map. A texture from a closed View
-      // samples as white, the way a stale mesh draws nothing (see Texture).
-      Color c = m ? m->color : it.node->color;
-      Texture2D tex = white_;
-      if (m && m->tex && m->tex->live()) tex = m->tex->tex;
-      float metallic = m ? m->metallic : 0.0f, roughness = m ? m->roughness : 0.85f;
-      float opacity = it.opacity / 255.0f, cutoff = m ? m->cutoff : 0.0f;
-      float unlit = m && m->unlit_ ? 1.0f : 0.0f, fogon = m && !m->fog_ ? 0.0f : 1.0f;
-      float alpha_mode = (it.transparent || !depth_in_alpha) ? 1.0f : 0.0f;
-      Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
-      Vector4 uv = m ? m->uv_ : Vector4{1, 1, 0, 0};
-      // A bottom-up texture (a canvas, a render target) reads upright through
-      // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo): the flip composes with the
-      // material's own transform, so a mirror's uv(-1, 1, 1, 0) still mirrors.
-      if (m && m->tex && m->tex->live() && m->tex->flip_v) { uv.y = -uv.y; uv.w = 1.0f - uv.w; }
-      bool nm = m && m->normal && m->normal->live();
-      float nstrength = nm ? m->normal_strength : 0.0f;
-      mat_.maps[MATERIAL_MAP_DIFFUSE].color = c;
-      mat_.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
-      mat_.maps[MATERIAL_MAP_ROUGHNESS].texture = nm ? m->normal->tex : white_;
-      SetShaderValue(lit_, loc_nstrength_, &nstrength, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_rough_, &roughness, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_opacity_, &opacity, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_cutoff_, &cutoff, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_emissive_, &emissive, SHADER_UNIFORM_VEC3);
-      SetShaderValue(lit_, loc_unlit_, &unlit, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_fogon_, &fogon, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_alphamode_, &alpha_mode, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(lit_, loc_uv_, &uv, SHADER_UNIFORM_VEC4);
-      DrawMesh(*it.node->mesh_for(ctx), mat_, it.draw);
+      float fogon = m && !m->fog_ ? 0.0f : 1.0f;
+      float alpha_mode = (it.transparent || !pass.depth_in_alpha) ? 1.0f : 0.0f;
+      if (surface) {
+        draw_surface(it, ctx, fogon, alpha_mode);
+        depth_stale |= want_dw && !it.transparent;
+      } else {
+        if (depth_stale && !(m && !m->depth_test_)) {
+          line_mat_.maps[MATERIAL_MAP_DIFFUSE].texture = copy_depth(pass.rt);
+          depth_stale = false;
+        }
+        draw_lines(it, ctx, pass, fogon, alpha_mode);
+      }
     }
     // Leave the state as the pass found it, for the 2D overlay and the next pass.
     if (!depth_write) rlEnableDepthMask();
@@ -2092,6 +2345,82 @@ class View {
     if (!culling) rlEnableBackfaceCulling();
     if (depth_bias.x != 0 || depth_bias.y != 0) set_depth_bias(Vector2{0, 0});
     if (blending) { rlSetBlendMode(RL_BLEND_ALPHA); rlDisableColorBlend(); }
+  }
+  // One surface's uniforms and draw. A texture from a closed View samples as
+  // white, the way a stale mesh draws nothing (see Texture).
+  void draw_surface(const DrawItem& it, const RenderCtx& ctx, float fogon, float alpha_mode) {
+    const Material* m = it.mat;
+    Texture2D tex = white_;
+    if (m && m->tex && m->tex->live()) tex = m->tex->tex;
+    float metallic = m ? m->metallic : 0.0f, roughness = m ? m->roughness : 0.85f;
+    float cutoff = m ? m->cutoff : 0.0f;
+    float unlit = m && m->unlit_ ? 1.0f : 0.0f;
+    Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
+    Vector4 uv = m ? m->uv_ : Vector4{1, 1, 0, 0};
+    // A bottom-up texture (a canvas, a render target) reads upright through
+    // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo): the flip composes with the
+    // material's own transform, so a mirror's uv(-1, 1, 1, 0) still mirrors.
+    if (m && m->tex && m->tex->live() && m->tex->flip_v) { uv.y = -uv.y; uv.w = 1.0f - uv.w; }
+    bool nm = m && m->normal && m->normal->live();
+    float nstrength = nm ? m->normal_strength : 0.0f;
+    mat_.maps[MATERIAL_MAP_DIFFUSE].color = m ? m->color : it.node->color;
+    mat_.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
+    mat_.maps[MATERIAL_MAP_ROUGHNESS].texture = nm ? m->normal->tex : white_;
+    SetShaderValue(lit_, loc_nstrength_, &nstrength, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_rough_, &roughness, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_cutoff_, &cutoff, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_emissive_, &emissive, SHADER_UNIFORM_VEC3);
+    SetShaderValue(lit_, loc_unlit_, &unlit, SHADER_UNIFORM_FLOAT);
+    set_finish(lit_, lit_fin_, fogon, alpha_mode, it.opacity / 255.0f);
+    SetShaderValue(lit_, loc_uv_, &uv, SHADER_UNIFORM_VEC4);
+    DrawMesh(*it.node->mesh_for(ctx), mat_, it.draw);
+  }
+  // One lines node: unlit and untextured — the segments' colours times the
+  // material's or the node's colour, the opacity and the fog. Thinner than a
+  // target pixel, it is drawn one pixel wide and as much fainter, which keeps
+  // what it adds to the picture and keeps it from breaking into dashes. The
+  // depth it tests against is line_mat_'s diffuse map (copy_depth).
+  void draw_lines(const DrawItem& it, const RenderCtx& ctx, const Pass& pass, float fogon, float alpha_mode) {
+    const Material* m = it.mat;
+    float w = (float)it.node->line_width_ * pass.px_scale;
+    float half_width = 0.5f * std::max(w, 1.0f);
+    float dtest = m && !m->depth_test_ ? 0.0f : 1.0f;
+    // units in steps of a 24-bit depth buffer, as glPolygonOffset counts them
+    Vector2 dbias = m ? Vector2{m->depth_bias_.x, m->depth_bias_.y / 16777216.0f} : Vector2{0, 0};
+    SetShaderValue(line_, loc_line_halfwidth_, &half_width, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(line_, loc_line_dtest_, &dtest, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(line_, loc_line_dbias_, &dbias, SHADER_UNIFORM_VEC2);
+    set_finish(line_, line_fin_, fogon, alpha_mode, it.opacity / 255.0f * std::min(w, 1.0f));
+    line_mat_.maps[MATERIAL_MAP_DIFFUSE].color = m ? m->color : it.node->color;
+    DrawMesh(*it.node->mesh_for(ctx), line_mat_, it.draw);
+  }
+  // The depth drawn into `rt` so far, copied into a texture of its size for
+  // the line shader. glCopyTexSubImage2D converts between depth formats,
+  // where a blit would need the copy's to match the driver's choice for rt.
+  // The copy is sized 24-bit: raylib's unsized GL_DEPTH_COMPONENT let a
+  // driver keep 16 bits, a step of over 10 m at 1.5 km with the default near
+  // plane, which buried a line's depth_bias and hid half a runway marking.
+  Texture2D copy_depth(const RenderTexture2D& rt) {
+    int w = rt.texture.width, h = rt.texture.height;
+    auto it = std::find_if(depth_copies_.begin(), depth_copies_.end(),
+                           [&](const DepthCopy& c) { return c.w == w && c.h == h; });
+    if (it == depth_copies_.end()) {
+      unsigned tex = 0;
+      glGenTextures(1, &tex);
+      glBindTexture(GL_TEXTURE_2D, tex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+      // texelFetch reads level 0 only, but an incomplete texture reads as zero.
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      it = depth_copies_.insert(it, DepthCopy{tex, w, h});
+    }
+    rlDrawRenderBatchActive();
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, rt.id);
+    glBindTexture(GL_TEXTURE_2D, it->tex);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return Texture2D{it->tex, w, h, 1, PIXELFORMAT_UNCOMPRESSED_R32};
   }
   // glPolygonOffset for the fills that follow; (0, 0) turns it off.
   static void set_depth_bias(Vector2 b) {
@@ -2125,12 +2454,15 @@ class View {
   // blend; the transparent ones re-enable it with factors that leave the
   // destination's alpha alone (emit / set_blend).
   //
-  // `lod_bias` is log2 of the pass's supersample factor: drawn n times larger,
-  // the GPU would pick finer mip levels than the output's own size does.
-  void lit_target(const RenderTexture2D& rt, const Camera3D& cam,
-                  bool depth_in_alpha, float lod_bias = 0.0f) {
+  // `lod_bias` is log2 of a render target's supersample factor: drawn n times
+  // larger, the GPU would pick finer mip levels than the output's own size does.
+  void lit_target(const Pass& pass, const Camera3D& cam, float lod_bias = 0.0f) {
+    const RenderTexture2D& rt = pass.rt;
     if (lod_bias != 0.0f) SetShaderValue(lit_, loc_lodbias_, &lod_bias, SHADER_UNIFORM_FLOAT);
     rlSetClipPlanes(near_, far_);
+    Vector2 target{(float)rt.texture.width, (float)rt.texture.height};
+    SetShaderValue(line_, loc_line_target_, &target, SHADER_UNIFORM_VEC2);
+    SetShaderValue(line_, loc_line_near_, &near_, SHADER_UNIFORM_FLOAT);
     BeginTextureMode(rt);
     ClearBackground(bg_);
     if (has_sky_)   // gradient sky behind the scene (3D draws over it via depth)
@@ -2138,7 +2470,7 @@ class View {
                              sky_top_, sky_bot_);
     rlDisableColorBlend();
     BeginMode3D(cam);
-    lit_pass(cam, depth_in_alpha);
+    lit_pass(cam, pass);
     EndMode3D();
     rlEnableColorBlend();
     EndTextureMode();
@@ -2164,12 +2496,11 @@ class View {
     SetShaderValueMatrix(lit_, loc_lvp1_, vp1);
 
     // camera position drives specular + fog distance in the lit shader
-    Vector3 vp = cam_.position;
-    SetShaderValue(lit_, loc_viewpos_, &vp, SHADER_UNIFORM_VEC3);
+    set_view_pos(cam_.position);
 
     // --- lit pass: render the scene into an off-screen target -------------
     // cascades are bound automatically via mat_.maps[SPECULAR/NORMAL]
-    lit_target(scene_rt_, cam_, /*depth_in_alpha=*/true);
+    lit_target(Pass{scene_rt_, /*depth_in_alpha=*/true, (float)ss_}, cam_);
 
     // --- post pass at supersample resolution (SSAO/DoF/bloom/tonemap/LUT) ---
     int sw = scene_rt_.texture.width, sh = scene_rt_.texture.height;
@@ -2486,11 +2817,27 @@ class View {
     SetShaderValue(lit_, loc_amb_, &amb_, SHADER_UNIFORM_VEC3);
   }
   void set_fog_uniform() {
-    SetShaderValue(lit_, loc_fogcol_, &fogcol_, SHADER_UNIFORM_VEC3);
-    SetShaderValue(lit_, loc_fogstart_, &fogstart_, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(lit_, loc_fogend_, &fogend_, SHADER_UNIFORM_FLOAT);
     float hf[2] = {height_density_, height_falloff_};
-    SetShaderValue(lit_, loc_heightfog_, hf, SHADER_UNIFORM_VEC2);
+    for (auto [sh, at] : finishers()) {
+      SetShaderValue(sh, at.fogcol, &fogcol_, SHADER_UNIFORM_VEC3);
+      SetShaderValue(sh, at.fogstart, &fogstart_, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(sh, at.fogend, &fogend_, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(sh, at.heightfog, hf, SHADER_UNIFORM_VEC2);
+    }
+  }
+  // The eye, for the fog distance (and the lit shader's specular).
+  void set_view_pos(Vector3 p) {
+    for (auto [sh, at] : finishers()) SetShaderValue(sh, at.viewpos, &p, SHADER_UNIFORM_VEC3);
+  }
+  // A fragment's per-draw ending: fog on or off, the pass's alpha, its opacity.
+  static void set_finish(const Shader& sh, const FinishLocs& at, float fog_on, float alpha_mode,
+                         float opacity) {
+    SetShaderValue(sh, at.fogon, &fog_on, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, at.alphamode, &alpha_mode, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, at.opacity, &opacity, SHADER_UNIFORM_FLOAT);
+  }
+  std::array<std::pair<Shader, FinishLocs>, 2> finishers() const {
+    return {{{lit_, lit_fin_}, {line_, line_fin_}}};
   }
   void set_sky_uniform() {
     Vector3 t{sky_top_.r / 255.0f, sky_top_.g / 255.0f, sky_top_.b / 255.0f};
@@ -2511,9 +2858,17 @@ class View {
   std::vector<Vector2> path_;   // the 2D path being built (path_begin / path_to)
   Texture2D white_{};
   Shader lit_{}, depth_{}, post_{};
+  Shader line_{};   // 3D lines (kVS_LINE), drawn in the lit pass
+  FinishLocs lit_fin_{}, line_fin_{};
+  int loc_line_target_ = 0, loc_line_halfwidth_ = 0, loc_line_near_ = 0;
+  int loc_line_dtest_ = 0, loc_line_dbias_ = 0;
+  // Depth textures the line shader reads, one per target size; the depth of a
+  // render target is a renderbuffer, which no shader can sample.
+  struct DepthCopy { unsigned tex = 0; int w = 0, h = 0; };
+  std::vector<DepthCopy> depth_copies_;
   Shader box_{};   // the supersampled-target resolve
   int loc_ssfactor_ = 0;
-  ::Material mat_{}, depth_mat_{};   // raylib's (gfx::Material is the script's)
+  ::Material mat_{}, depth_mat_{}, line_mat_{};   // raylib's (gfx::Material is the script's)
   RenderTexture2D shadowmap0_{}, shadowmap1_{}, scene_rt_{}, post_rt_{};
   int ss_ = 2;              // supersample factor for antialiasing
   static constexpr int kMaxSupersample = 4;   // cost and memory grow with its square
@@ -2533,11 +2888,10 @@ class View {
   Mesh cube_{}, sphere_{}, cyl_{}, plane_{};
   int loc_dir_ = 0, loc_lcol_ = 0, loc_amb_ = 0;
   int loc_lvp0_ = 0, loc_lvp1_ = 0;
-  int loc_viewpos_ = 0, loc_fogcol_ = 0, loc_fogstart_ = 0, loc_fogend_ = 0, loc_heightfog_ = 0;
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
-  int loc_opacity_ = 0, loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_fogon_ = 0;
-  int loc_alphamode_ = 0, loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
+  int loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0;
+  int loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
   bool culling_ = true;
   std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
   Vector3 dir_ = Vector3{0.4f, -0.8f, -0.48f};   // unit length, like sun() stores
@@ -2659,6 +3013,7 @@ const bool registered = [] {
       .borrowed_method<&gfx::Node::vertex_uv>("vertex_uv", {"x", "y", "z", "nx", "ny", "nz", "u", "v"})
       .borrowed_method<&gfx::Node::set_vertex_color>("color", {"r", "g", "b"})
       .borrowed_method<&gfx::Node::tri>("tri", {"a", "b", "c"})
+      .borrowed_method<&gfx::Node::segment>("segment", {"x0", "y0", "z0", "x1", "y1", "z1"})
       .borrowed_method<&gfx::Node::load>("load", {"positions", "indices", {"normals", ""}, {"uvs", ""}, {"colours", ""}})
       .borrowed_method<&gfx::Node::build>("build")
       .method<&gfx::Node::child>("add_node")
@@ -2667,6 +3022,7 @@ const bool registered = [] {
       .method<&gfx::Node::add_cylinder>("add_cylinder", {"r", "h"})
       .method<&gfx::Node::add_plane>("add_plane", {"w", "d"})
       .method<&gfx::Node::add_mesh>("add_mesh")
+      .method<&gfx::Node::add_lines>("add_lines", {{"width", 1.0}})
       .method<&gfx::Node::x>("x")
       .method<&gfx::Node::y>("y")
       .method<&gfx::Node::z>("z");
@@ -2758,6 +3114,7 @@ const bool registered = [] {
       .method<&gfx::View::add_cylinder>("add_cylinder", {"r", "h"})
       .method<&gfx::View::add_plane>("add_plane", {"w", "d"})
       .method<&gfx::View::add_mesh>("add_mesh")
+      .method<&gfx::View::add_lines>("add_lines", {{"width", 1.0}})
       .method<&gfx::View::camera>(
           "camera", {"px", "py", "pz", "tx", "ty", "tz", "ux", "uy", "uz", "fov"})
       .method<&gfx::View::render_3d>("render_3d")
