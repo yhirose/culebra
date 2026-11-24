@@ -1972,6 +1972,48 @@ compile once, at build, and the stdlib holds functions past the cut
 (kauai's parser, synth's `lower`). `tests/jit_big_function_test.sh`
 reads the cut off the IR.
 
+Size cannot tell a function the program calls every step from one it
+runs once (a constructor, the top level), so a function past the cut is
+optimized again once the program has called it often, the way JVMs, .NET
+and V8 decide which code is worth its compile. Every use of it (a direct
+call, the code its closures carry, its own recursion) goes through
+`<f>.entry`, which tail-calls whatever `<f>.code` points at
+(`JIT::reach_through_code_pointer`). Before the cut,
+`JIT::snapshot_for_reoptimizing` writes in bitcode the function as
+lowered, named `<f>.opt`, with available_externally copies of what it
+reaches by direct calls and of the constants it reads, so that its
+pipeline inlines and folds what the whole program's would. Every other
+reference declares the program's own symbol, which the snapshot makes
+external before the program's pipeline can change it; a constant whose
+address means nothing is copied instead, so the program can still merge
+it with its duplicates. The -O0 body counts its calls down from what the
+host stores in `<f>.calls` once the module is linked (`JIT::count_calls`,
+at the end of the entry block, which keeps its allocas static), and the
+call that reaches zero hands the function to the run's
+`JIT::Reoptimizer`. That compiles the snapshot at the program's level into
+the same LLJIT and stores the code in `<f>.code`; frames already in the
+-O0 code finish there. The object cache keeps the snapshots beside the
+object of the run that took them, so a source-key hit, which links that
+object and drops the module it lowered, optimizes again from the
+snapshots whose names are the object's. The IR does not depend on the
+settings, so a cached object serves any of them:
+`CULEBRA_JIT_REOPTIMIZE_CALLS` is the count (100), and
+`CULEBRA_JIT_REOPTIMIZE` where the compile runs. By default it runs on a
+thread of its own while the program goes on; `wait` runs it on the
+thread whose call reached the count, so the next call is optimized,
+which is what a benchmark and a test want; `off` never runs it. A run
+that ends first, by returning or by `Sys.exit` (which does not unwind,
+so an atexit handler stops the compile), drops what is queued and
+cancels the compile under way, skipping every optional pass left; a
+backend already begun runs to its end. A function past
+`kMaxReoptimizedBlocks` (16,384) stays at -O0. A generator body,
+entered again at each resume, keeps the code it started with, and a
+function the program enters once, such as the top level, never reaches
+its count. Optimized again, the flight model's ground step takes 3.6 µs
+against 6.7 µs at -O0 and 3.7 µs built ahead of time (x86-64,
+`just build`); the compile takes 4.4 s, and the cut with its snapshots
+0.1 s of a start-up of 8 s (`[jit-time] reopt` and `cut`).
+
 What a long function's blocks are made of is read with
 `CULEBRA_JIT_BLOCK_STATS=<n>`: for each function the lowering produces
 with at least n blocks, two tables on stderr. The first counts its blocks
