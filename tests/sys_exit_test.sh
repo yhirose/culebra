@@ -68,7 +68,7 @@ check() { # <label> <command...>
   fi
 }
 
-check vm "$CULEBRA" "$TMP/exits.cul"
+check vm "$CULEBRA" --vm "$TMP/exits.cul"
 check jit "$CULEBRA" --jit "$TMP/exits.cul"
 if [[ "$WITH_AOT" == "--aot" ]]; then
   if "$CULEBRA" build "$TMP/exits.cul" -o "$TMP/exits" > "$TMP/build.err" 2>&1; then
