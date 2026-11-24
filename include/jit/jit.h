@@ -764,11 +764,17 @@ struct JIT {
         const llvm::Module* m) override {
       return object(m->getModuleIdentifier());
     }
-    // The object stored under `object_key`, or null. A hit is touched:
-    // eviction goes by age, and an entry every run reads is not the oldest.
+    // The object stored under `object_key`, or null.
     std::unique_ptr<llvm::MemoryBuffer> object(llvm::StringRef object_key) {
+      return entry(object_key, ".o");
+    }
+    // What the run that compiled `object_key` kept beside the object, under
+    // `ext`, or null. A hit is touched: eviction goes by age, and an entry
+    // every run reads is not the oldest.
+    std::unique_ptr<llvm::MemoryBuffer> entry(llvm::StringRef object_key,
+                                              const char* ext) {
       if (!is_key(object_key)) return nullptr;
-      auto p = path(object_key, ".o");
+      auto p = path(object_key, ext);
       auto buf = llvm::MemoryBuffer::getFile(p, /*IsText=*/false);
       if (!buf) return nullptr;
       std::error_code ec;
@@ -776,6 +782,10 @@ struct JIT {
           p, std::filesystem::file_time_type::clock::now(), ec);
       return llvm::MemoryBuffer::getMemBufferCopy(
           (*buf)->getBuffer(), (*buf)->getBufferIdentifier());
+    }
+    void keep(llvm::StringRef object_key, const char* ext,
+              llvm::StringRef bytes) {
+      if (is_key(object_key)) write(path(object_key, ext), bytes);
     }
     // The object key `source_key` last came to, or empty.
     std::string object_key_of(llvm::StringRef source_key) const {
@@ -933,6 +943,58 @@ struct JIT {
     auto object = object_for(mod, fast_codegen);
     cache->remember(source_key, mod.getModuleIdentifier());
     return object;
+  }
+
+  // What a function past the cut is optimized again from: its name, the
+  // module snapshot_for_reoptimizing made of it, in bitcode, and the level
+  // the rest of the program was optimized at.
+  struct Reoptimizable {
+    std::string name;
+    std::string bitcode;
+    int opt_level = 2;
+  };
+
+  // The snapshots of the functions past the cut, kept beside the object of
+  // the run that took them: a source-key hit links that run's object, whose
+  // symbols are the ones its own snapshots name.
+  static constexpr const char* kSnapshotsExt = ".reopt";
+
+  static void keep_snapshots(const llvm::Module& mod,
+                             const std::vector<Reoptimizable>& snapshots) {
+    auto* cache = object_cache();
+    if (!cache || snapshots.empty()) return;
+    std::string bytes;
+    for (const auto& s : snapshots)
+      bytes += std::format("{} {} {}\n{}{}", s.opt_level, s.name.size(),
+                           s.bitcode.size(), s.name, s.bitcode);
+    cache->keep(mod.getModuleIdentifier(), kSnapshotsExt, bytes);
+  }
+
+  static std::vector<Reoptimizable> cached_snapshots(
+      const std::string& source_key) {
+    std::vector<Reoptimizable> snapshots;
+    auto* cache = object_cache();
+    if (!cache) return snapshots;
+    auto buf = cache->entry(cache->object_key_of(source_key), kSnapshotsExt);
+    if (!buf) return snapshots;
+    llvm::StringRef rest = buf->getBuffer();
+    while (!rest.empty()) {
+      auto [head, tail] = rest.split('\n');
+      llvm::SmallVector<llvm::StringRef, 3> f;
+      head.split(f, ' ');
+      Reoptimizable s;
+      size_t name_size = 0, bitcode_size = 0;
+      if (f.size() != 3 || f[0].getAsInteger(10, s.opt_level) ||
+          f[1].getAsInteger(10, name_size) ||
+          f[2].getAsInteger(10, bitcode_size) ||
+          tail.size() < name_size + bitcode_size)
+        return {};  // not what keep_snapshots wrote: no snapshot at all
+      s.name = tail.substr(0, name_size).str();
+      s.bitcode = tail.substr(name_size, bitcode_size).str();
+      snapshots.push_back(std::move(s));
+      rest = tail.substr(name_size + bitcode_size);
+    }
+    return snapshots;
   }
 
   // The same by the object key alone, which is all a module no source names
@@ -1455,15 +1517,11 @@ struct JIT {
   // core for tens of seconds, and an exit would wait for its backend.
   static constexpr size_t kMaxReoptimizedBlocks = 4 * kMaxOptimizedBlocks;
 
-  // What a function past the cut is optimized again from: its name, and the
-  // module snapshot_for_reoptimizing made of it, in bitcode.
-  struct Reoptimizable {
-    std::string name;
-    std::string bitcode;
-  };
-
+  // The cut counts a function as -O0 compiles it; optimized again, it is
+  // compiled with its Float copies and with what it inlines, several times
+  // that, which is the backend a run that ends first still waits for.
   static std::vector<Reoptimizable> keep_big_functions_unoptimized(
-      llvm::Module& mod) {
+      llvm::Module& mod, int opt_level) {
     struct Cut {
       llvm::Function* f;
       ArithVersions versions;
@@ -1493,8 +1551,9 @@ struct JIT {
     std::vector<Reoptimizable> snapshots;
     if (!reopt.empty()) name_anonymous_globals(mod);
     for (auto* f : reopt)
-      snapshots.push_back(
-          {f->getName().str(), snapshot_for_reoptimizing(mod, *f, past_cut)});
+      snapshots.push_back({f->getName().str(),
+                           snapshot_for_reoptimizing(mod, *f, past_cut),
+                           opt_level});
     for (auto& c : cuts) {
       drop_float_copies(*c.f, c.versions);
       assert(c.f->size() == c.unversioned);
@@ -6052,9 +6111,12 @@ struct JIT {
     }
 
     // Arms the counters of the module `jit` has linked: from here on a
-    // function's count reaching zero asks this Reoptimizer.
+    // function's count reaching zero asks this Reoptimizer. The module holds
+    // its address from here on, so it outlives `jit` (exec declares it
+    // first), and stop() ends its work on `jit` before `jit` goes.
     Reoptimizer(llvm::orc::LLJIT& jit, std::vector<Reoptimizable> fns)
         : jit_(jit) {
+      enlist(this);
       auto addr = [&](const std::string& name) -> void* {
         auto sym = jit.lookup(name);
         if (sym) return sym->toPtr<void*>();
@@ -6068,15 +6130,33 @@ struct JIT {
       for (auto& f : fns) {
         auto* code = static_cast<void**>(addr(f.name + ".code"));
         auto* calls = static_cast<int64_t*>(addr(f.name + ".calls"));
-        fns_.push_back({std::move(f.name), std::move(f.bitcode), code,
-                        /*asked=*/!code || !calls});
+        fns_.push_back({std::move(f), code, /*asked=*/!code || !calls});
         if (fns_.back().asked) continue;
         std::atomic_ref<int64_t>(*calls).store(calls_before(),
                                                std::memory_order_relaxed);
       }
     }
 
-    ~Reoptimizer() { stop(); }
+    ~Reoptimizer() {
+      stop();
+      delist(this);
+    }
+
+    // The run is ending: calls still arriving (an isolate not yet joined, a
+    // thread the run does not join) do nothing, what is queued is dropped,
+    // and a compile under way skips the rest of its pipeline (the backend,
+    // once begun, runs to its end). Waits for a compile on another thread.
+    void stop() {
+      {
+        std::lock_guard lock(mu_);
+        closed_ = true;
+        cancel_ = true;
+      }
+      ready_.notify_all();
+      std::call_once(joined_, [&] {
+        if (worker_.joinable()) worker_.join();
+      });
+    }
 
     // What a counter calls (kReoptRequest), with the module's context.
     static void request_from_code(Reoptimizer* self, int64_t id) noexcept {
@@ -6085,8 +6165,7 @@ struct JIT {
 
    private:
     struct Fn {
-      std::string name;
-      std::string bitcode;
+      Reoptimizable from;
       void** code;
       bool asked = false;
     };
@@ -6100,7 +6179,6 @@ struct JIT {
       queue_.push_back(id);
       if (!worker_.joinable()) {
         try {
-          enlist(this);
           worker_ = std::thread([this] { work(); });
         } catch (const std::exception& e) {
           queue_.clear();
@@ -6126,27 +6204,12 @@ struct JIT {
       }
     }
 
-    // The run is ending: calls still arriving (an isolate not yet joined) do
-    // nothing, what is queued is dropped, and a compile under way skips the
-    // rest of its pipeline (the backend, once begun, runs to its end).
-    void stop() {
-      {
-        std::lock_guard lock(mu_);
-        closed_ = true;
-        cancel_ = true;
-      }
-      ready_.notify_all();
-      std::call_once(joined_, [&] {
-        if (worker_.joinable()) worker_.join();
-      });
-      delist(this);
-    }
-
-    // Sys.exit leaves without unwinding the run, so its Reoptimizer would
-    // never stop: the worker would go on in LLVM while the process tears
-    // LLVM's statics down. An atexit handler stops every Reoptimizer with a
-    // worker first, registered after the list it reads exists, so that the
-    // list outlives it.
+    // Sys.exit leaves without unwinding the run, from whichever thread calls
+    // it, so its Reoptimizer would never stop: a compile would go on in LLVM
+    // while the process tears LLVM's statics down, or start during it. An
+    // atexit handler stops every live Reoptimizer first, holding the list so
+    // that none is destroyed under it; it is registered after the list it
+    // reads exists, so that the list outlives it.
     struct Live {
       std::mutex mu;
       std::vector<Reoptimizer*> all;
@@ -6160,12 +6223,8 @@ struct JIT {
       static std::once_flag registered;
       std::call_once(registered, [] {
         std::atexit([] {
-          std::vector<Reoptimizer*> all;
-          {
-            std::lock_guard lock(live().mu);
-            all = live().all;
-          }
-          for (auto* r : all) r->stop();
+          std::lock_guard lock(live().mu);
+          for (auto* r : live().all) r->stop();
         });
       });
       std::lock_guard lock(l.mu);
@@ -6190,10 +6249,10 @@ struct JIT {
       auto t0 = std::chrono::steady_clock::now();
       auto ctx = std::make_unique<LLVMContext>();
       auto mod = parseBitcodeFile(
-          MemoryBufferRef(f.bitcode, f.name), *ctx);
+          MemoryBufferRef(f.from.bitcode, f.from.name), *ctx);
       if (!mod) return report(f, toString(mod.takeError()));
-      std::string().swap(f.bitcode);
-      optimize_module(**mod, 2, &cancel_);
+      std::string().swap(f.from.bitcode);
+      optimize_module(**mod, f.from.opt_level, &cancel_);
       if (cancel_) return cancelled(f);
       Error err = Error::success();
       if (auto object = object_for(**mod, /*fast_codegen=*/false)) {
@@ -6203,7 +6262,7 @@ struct JIT {
             std::move(*mod), orc::ThreadSafeContext(std::move(ctx))));
       }
       if (err) return report(f, toString(std::move(err)));
-      auto code = jit_.lookup(f.name + ".opt");
+      auto code = jit_.lookup(f.from.name + ".opt");
       if (!code) return report(f, toString(code.takeError()));
       std::atomic_ref<void*>(*f.code).store(code->toPtr<void*>(),
                                             std::memory_order_release);
@@ -6213,19 +6272,19 @@ struct JIT {
             stderr, "[jit-time] reopt    %8.1f ms  %s\n",
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t0).count(),
-            f.name.c_str());
+            f.from.name.c_str());
     }
 
     static void cancelled(const Fn& f) {
       if (time_passes())
         std::fprintf(stderr, "[jit-time] reopt    cancelled  %s\n",
-                     f.name.c_str());
+                     f.from.name.c_str());
     }
 
     // The function goes on in the code it has.
     static void report(const Fn& f, const std::string& why) {
       std::fprintf(stderr, "culebra: --jit could not optimize %s again: %s\n",
-                   f.name.c_str(), why.c_str());
+                   f.from.name.c_str(), why.c_str());
     }
 
     llvm::orc::LLJIT& jit_;
@@ -6248,10 +6307,17 @@ struct JIT {
                    std::vector<Reoptimizable> reoptimizable = {}) {
     using namespace llvm;
     auto phase_t = std::chrono::steady_clock::now();
-    auto jit = create_jit_instance(fast_codegen);
-    // Between `jit` and the guard below: it compiles into `jit`, and an
-    // isolate can call into it until the guard has joined them all.
+    // Before `jit`: the code holds its address for as long as `jit` maps it.
     std::optional<Reoptimizer> reoptimizer;
+    auto jit = create_jit_instance(fast_codegen);
+    // Its work on `jit` ends before `jit` goes, once the guard below has
+    // joined the isolates that could still ask it for some.
+    struct StopReoptimizer {
+      std::optional<Reoptimizer>& r;
+      ~StopReoptimizer() {
+        if (r) r->stop();
+      }
+    } stop_reoptimizer{reoptimizer};
     // Declared after `jit`, so on any exit path it runs before `jit` tears
     // down: every isolate's compiled body is the same JitClosure::fn_ptr in
     // this LLJIT, and one still running when the code is freed returns into

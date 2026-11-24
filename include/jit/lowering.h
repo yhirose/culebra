@@ -93,23 +93,29 @@ struct Lowering {
     auto phase_t = std::chrono::steady_clock::now();
     lower_program(jit, p, opt_level > 0, "__culebra_main", baked);
     JIT::time_phase("lower", phase_t);
-    // Here alone: the baked preamble and `culebra build` pay their compile
-    // once, at build, and run many times. Before the cache is asked, since a
-    // hit still needs the snapshots of the functions past the cut.
-    std::vector<JIT::Reoptimizable> reoptimizable;
-    if (opt_level > 0) {
-      reoptimizable = JIT::keep_big_functions_unoptimized(*mod);
-      JIT::time_phase("cut", phase_t);
-    }
     // The object cache's two keys (JIT::FileObjectCache), in the order they
     // can answer: the source key before the IR pipeline, which a hit skips
     // along with the backend, and the object key after it, which skips the
     // backend alone. --emit-llvm prints the pipeline's output and asks neither.
+    // The snapshots of the functions past the cut come from the run whose
+    // object is linked: a source-key hit reads that run's.
     auto cached = emit_llvm ? nullptr : JIT::cached_object(source_key);
-    if (!cached) {
-      if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+    std::vector<JIT::Reoptimizable> reoptimizable;
+    if (cached) {
+      reoptimizable = JIT::cached_snapshots(source_key);
+    } else {
+      if (opt_level > 0) {
+        // Here alone: the baked preamble and `culebra build` pay their
+        // compile once, at build, and run many times.
+        reoptimizable = JIT::keep_big_functions_unoptimized(*mod, opt_level);
+        JIT::time_phase("cut", phase_t);
+        JIT::optimize_module(*mod, opt_level);
+      }
       JIT::time_phase("optimize", phase_t);
-      if (!emit_llvm) cached = JIT::keyed_object(*mod, source_key, fast_codegen);
+      if (!emit_llvm) {
+        cached = JIT::keyed_object(*mod, source_key, fast_codegen);
+        JIT::keep_snapshots(*mod, reoptimizable);
+      }
     }
     if (cached) JIT::time_phase("cached", phase_t);
     if (emit_llvm) {

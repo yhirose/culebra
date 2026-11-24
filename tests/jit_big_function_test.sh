@@ -100,21 +100,29 @@ done
 # runs (JIT::Reoptimizer). `wait` compiles it on the call that reaches the
 # count, so from the second call on test_jit_big_function.cul runs the
 # optimized code, throws and drops included, and its asserts still hold.
-reopt() { # <mode>: the run's stderr
-  CULEBRA_JIT_CACHE=off CULEBRA_JIT_TIME_PASSES=1 CULEBRA_JIT_REOPTIMIZE="$1" \
-    CULEBRA_JIT_REOPTIMIZE_CALLS=1 "$CULEBRA" --jit \
-    "$HERE/test_jit_big_function.cul" 2>&1 > /dev/null
+reopt() { # <mode> [<cache>]: the run's stderr
+  CULEBRA_JIT_CACHE="${2:-off}" CULEBRA_JIT_TIME_PASSES=1 \
+    CULEBRA_JIT_REOPTIMIZE="$1" CULEBRA_JIT_REOPTIMIZE_CALLS=1 "$CULEBRA" \
+    --jit "$HERE/test_jit_big_function.cul" 2>&1 > /dev/null
 }
-for n in $names; do
-  out=$(reopt wait)
+# A source-key hit of the object cache links an earlier run's object, and
+# optimizes again from the snapshots that run kept beside it.
+mkdir "$TMP/cache"
+for run in plain cached-miss cached-hit; do
+  case $run in
+    plain) out=$(reopt wait) ;;
+    *) out=$(reopt wait "$TMP/cache") ;;
+  esac
   rc=$?
-  if (( rc != 0 )) || ! grep -q "^\[jit-time\] reopt .* $n\$" <<< "$out" ||
-    grep -q 'could not optimize' <<< "$out"; then
-    echo "FAIL: $n (past $LIMIT blocks) was not optimized again under" \
-      "CULEBRA_JIT_REOPTIMIZE=wait (exit $rc):"
-    grep -v '^ ' <<< "$out" | grep -E 'reopt|culebra:|FAIL|Error' | head -5
-    fail=1
-  fi
+  for n in $names; do
+    if (( rc != 0 )) || ! grep -q "^\[jit-time\] reopt .* $n\$" <<< "$out" ||
+      grep -q 'could not optimize' <<< "$out"; then
+      echo "FAIL: $n (past $LIMIT blocks) was not optimized again under" \
+        "CULEBRA_JIT_REOPTIMIZE=wait, $run (exit $rc):"
+      grep -v '^ ' <<< "$out" | grep -E 'reopt|culebra:|FAIL|Error' | head -5
+      fail=1
+    fi
+  done
 done
 if reopt off | grep -q '^\[jit-time\] reopt '; then
   echo "FAIL: CULEBRA_JIT_REOPTIMIZE=off optimized a function again"
