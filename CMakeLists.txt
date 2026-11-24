@@ -597,7 +597,8 @@ if(CULEBRA_ENABLE_JIT)
       windowsdriver windowsmanifest debuginfopdb debuginfocodeview)
   endif()
   llvm_map_components_to_libnames(llvm_libs
-    core support orcjit native passes ${_extra_target_libs} ${_lld_components})
+    core support orcjit native passes bitreader bitwriter
+    ${_extra_target_libs} ${_lld_components})
   if(CULEBRA_LLD_LIBS)
     message(STATUS "lld's extra LLVM components: ${_lld_components}")
   endif()

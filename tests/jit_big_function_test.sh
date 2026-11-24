@@ -85,6 +85,42 @@ for n in $names; do
   fi
 done
 
+# Its call counter (JIT::count_calls) leaves every alloca in the entry block:
+# one after it is a dynamic allocation, made again on every call.
+for n in $names; do
+  late=$(fn_of "$n" "$TMP/opt.ll" |
+    awk '/^[A-Za-z0-9_.$"-]+:/ { b++ } b > 1 && / alloca / { c++ } END { print c + 0 }')
+  if (( late > 0 )); then
+    echo "FAIL: $n (past $LIMIT blocks) has $late allocas past its entry block"
+    fail=1
+  fi
+done
+
+# A function past the cut the program calls often is optimized again while it
+# runs (JIT::Reoptimizer). `wait` compiles it on the call that reaches the
+# count, so from the second call on test_jit_big_function.cul runs the
+# optimized code, throws and drops included, and its asserts still hold.
+reopt() { # <mode>: the run's stderr
+  CULEBRA_JIT_CACHE=off CULEBRA_JIT_TIME_PASSES=1 CULEBRA_JIT_REOPTIMIZE="$1" \
+    CULEBRA_JIT_REOPTIMIZE_CALLS=1 "$CULEBRA" --jit \
+    "$HERE/test_jit_big_function.cul" 2>&1 > /dev/null
+}
+for n in $names; do
+  out=$(reopt wait)
+  rc=$?
+  if (( rc != 0 )) || ! grep -q "^\[jit-time\] reopt .* $n\$" <<< "$out" ||
+    grep -q 'could not optimize' <<< "$out"; then
+    echo "FAIL: $n (past $LIMIT blocks) was not optimized again under" \
+      "CULEBRA_JIT_REOPTIMIZE=wait (exit $rc):"
+    grep -v '^ ' <<< "$out" | grep -E 'reopt|culebra:|FAIL|Error' | head -5
+    fail=1
+  fi
+done
+if reopt off | grep -q '^\[jit-time\] reopt '; then
+  echo "FAIL: CULEBRA_JIT_REOPTIMIZE=off optimized a function again"
+  fail=1
+fi
+
 # Past the cut a cleanup pad's release is the helper call alone
 # (settle_pad_release_tests): each inline tag test the lowering marked as a
 # pad's (-O0 prints the marks) takes its `rc.release` block with it, and no

@@ -44,6 +44,9 @@
 #include "llvm/ADT/DepthFirstIterator.h"  // arith_versions
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"  // settle_pad_release_tests
 #include "llvm/Transforms/Utils/Local.h"  // settle_pad_release_tests
+#include "llvm/Transforms/Utils/Cloning.h"  // snapshot_for_reoptimizing
+#include "llvm/Bitcode/BitcodeReader.h"  // a snapshot, read back by Reoptimizer
+#include "llvm/Bitcode/BitcodeWriter.h"  // a snapshot, written
 
 #ifdef _WIN32
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"  // orc::absoluteSymbols
@@ -922,9 +925,19 @@ struct JIT {
       llvm::Module& mod, const std::string& source_key, bool fast_codegen) {
     auto* cache = object_cache();
     if (!cache || !FileObjectCache::is_key(source_key)) return nullptr;
+    auto object = object_for(mod, fast_codegen);
+    cache->remember(source_key, mod.getModuleIdentifier());
+    return object;
+  }
+
+  // The same by the object key alone, which is all a module no source names
+  // has (a function optimized again while the program runs).
+  static std::unique_ptr<llvm::MemoryBuffer> object_for(llvm::Module& mod,
+                                                        bool fast_codegen) {
+    auto* cache = object_cache();
+    if (!cache) return nullptr;
     auto object_key = object_key_for(mod, fast_codegen);
     mod.setModuleIdentifier(object_key);
-    cache->remember(source_key, object_key);
     return cache->object(object_key);
   }
 
@@ -1060,6 +1073,11 @@ struct JIT {
             jit->getDataLayout().getGlobalPrefix()));
     jd.addGenerator(std::move(gen));
     define_baked_preambles(*jit, jd);
+    cantFail(jd.define(orc::absoluteSymbols(
+        {{jit->mangleAndIntern(kReoptRequest),
+          orc::ExecutorSymbolDef(
+              orc::ExecutorAddr::fromPtr(&Reoptimizer::request_from_code),
+              JITSymbolFlags::Exported | JITSymbolFlags::Callable)}})));
 #ifdef _WIN32
     define_windows_eh_symbols(*jit, jd);
 #endif
@@ -1427,25 +1445,63 @@ struct JIT {
   // start-up for most of a minute (docs/internals/vm.md §7).
   static constexpr size_t kMaxOptimizedBlocks = 4096;
 
-  static void keep_big_functions_unoptimized(llvm::Module& mod) {
-    std::vector<llvm::Function*> past_cut;
+  // A function past the cut the program calls often is optimized again while
+  // it runs (Reoptimizer), up to this size: past it the compile would take a
+  // core for tens of seconds, and an exit would wait for its backend.
+  static constexpr size_t kMaxReoptimizedBlocks = 4 * kMaxOptimizedBlocks;
+
+  // What a function past the cut is optimized again from: its name, and the
+  // module snapshot_for_reoptimizing made of it, in bitcode.
+  struct Reoptimizable {
+    std::string name;
+    std::string bitcode;
+  };
+
+  static std::vector<Reoptimizable> keep_big_functions_unoptimized(
+      llvm::Module& mod) {
+    struct Cut {
+      llvm::Function* f;
+      ArithVersions versions;
+      size_t unversioned;
+    };
+    std::vector<Cut> cuts;
+    llvm::SmallPtrSet<const llvm::Function*, 8> past_cut;
     for (auto& f : mod) {
       if (f.isDeclaration() || f.size() <= kMaxOptimizedBlocks) continue;
       // The function is counted as it was without its Float copies, and keeps
       // them under the cut. Past it they go: only a pipeline folds them.
-      const auto versions = arith_versions(f);
+      auto versions = arith_versions(f);
       const size_t unversioned = versions.unversioned_size(f);
       if (unversioned <= kMaxOptimizedBlocks) continue;
-      drop_float_copies(f, versions);
-      assert(f.size() == unversioned);
-      f.removeFnAttr(llvm::Attribute::AlwaysInline);
-      f.addFnAttr(llvm::Attribute::OptimizeNone);
-      f.addFnAttr(llvm::Attribute::NoInline);
-      settle_pad_release_tests(f, /*keep_test=*/false);
-      past_cut.push_back(&f);
+      cuts.push_back({&f, std::move(versions), unversioned});
+      past_cut.insert(&f);
     }
-    for (auto* f : past_cut)
-      if (f->getMetadata(kReoptimizable)) reach_through_code_pointer(*f);
+    // Every entry is in place before the first snapshot, so a snapshot names
+    // another function past the cut by its entry, as the program does.
+    std::vector<llvm::Function*> reopt;
+    for (auto& c : cuts)
+      if (c.f->getMetadata(kReoptimizable) &&
+          c.unversioned <= kMaxReoptimizedBlocks) {
+        reach_through_code_pointer(*c.f);
+        reopt.push_back(c.f);
+      }
+    std::vector<Reoptimizable> snapshots;
+    if (!reopt.empty()) name_anonymous_globals(mod);
+    for (auto* f : reopt)
+      snapshots.push_back(
+          {f->getName().str(), snapshot_for_reoptimizing(mod, *f, past_cut)});
+    for (auto& c : cuts) {
+      drop_float_copies(*c.f, c.versions);
+      assert(c.f->size() == c.unversioned);
+      c.f->setMetadata(kReoptimizable, nullptr);
+      c.f->removeFnAttr(llvm::Attribute::AlwaysInline);
+      c.f->addFnAttr(llvm::Attribute::OptimizeNone);
+      c.f->addFnAttr(llvm::Attribute::NoInline);
+      settle_pad_release_tests(*c.f, /*keep_test=*/false);
+    }
+    for (size_t id = 0; id < reopt.size(); ++id)
+      count_calls(*reopt[id], static_cast<int64_t>(id));
+    return snapshots;
   }
 
   // Marks a function whose code may be replaced while the program runs
@@ -1453,13 +1509,157 @@ struct JIT {
   // reached through reach_through_code_pointer; the pipeline drops the rest.
   static constexpr const char* kReoptimizable = "culebra.reoptimizable";
 
+  // The host's side of re-optimizing: the Reoptimizer a module's counters
+  // report to (written once the module is linked), and the function they call.
+  static constexpr const char* kReoptContext = "__culebra_reopt.ctx";
+  static constexpr const char* kReoptRequest = "__culebra_reoptimize";
+
+  // A snapshot declares the program's own globals by name.
+  static void name_anonymous_globals(llvm::Module& mod) {
+    for (auto& gv : mod.global_values())
+      if (!gv.hasName()) gv.setName("__culebra.anon");
+  }
+
+  // The module `f` is optimized again from: `f` as it is before the cut,
+  // named `<f>.opt`, beside available_externally copies of what it reaches
+  // by direct calls (short of another function past the cut) and of the
+  // constants it reads, so the pipeline inlines and folds what it would have
+  // in the whole program. Everything else is a declaration of the program's
+  // own symbol, which this makes external before the program's pipeline runs,
+  // so that the pipeline cannot change it under the declaration.
+  static std::string snapshot_for_reoptimizing(
+      llvm::Module& mod, llvm::Function& f,
+      const llvm::SmallPtrSetImpl<const llvm::Function*>& past_cut) {
+    using namespace llvm;
+    SmallPtrSet<const GlobalValue*, 32> copied{&f};
+    SmallVector<Function*, 32> fns{&f};
+    for (size_t k = 0; k < fns.size(); ++k)
+      for (auto& bb : *fns[k])
+        for (auto& i : bb)
+          if (auto* call = dyn_cast<CallBase>(&i))
+            if (auto* callee = call->getCalledFunction();
+                callee && !callee->isDeclaration() &&
+                !past_cut.contains(callee) && copied.insert(callee).second)
+              fns.push_back(callee);
+    // The constants they read, and the constants those name.
+    SmallPtrSet<const Constant*, 32> seen;
+    SmallVector<const Constant*, 64> todo;
+    auto reach = [&](const Value* v) {
+      if (auto* c = dyn_cast<Constant>(v); c && seen.insert(c).second)
+        todo.push_back(c);
+    };
+    for (auto* g : fns)
+      for (auto& bb : *g)
+        for (auto& i : bb)
+          for (auto& op : i.operands()) reach(op);
+    while (!todo.empty()) {
+      auto* c = todo.pop_back_val();
+      if (auto* var = dyn_cast<GlobalVariable>(c)) {
+        if (var->isConstant() && var->hasInitializer()) {
+          copied.insert(var);
+          reach(var->getInitializer());
+        }
+      } else if (!isa<GlobalValue>(c)) {
+        for (auto& op : c->operands()) reach(op);
+      }
+    }
+    ValueToValueMapTy vmap;
+    auto snap = CloneModule(
+        mod, vmap, [&](const GlobalValue* gv) { return copied.contains(gv); });
+    auto* opt = cast<Function>(vmap[&f]);
+    opt->setName(f.getName() + ".opt");
+    opt->setLinkage(GlobalValue::ExternalLinkage);
+    // Cloned whole: drop what `<f>.opt` does not reach.
+    for (bool dropped = true; dropped;) {
+      dropped = false;
+      for (auto& gv : make_early_inc_range(snap->global_values())) {
+        if (&gv == opt) continue;
+        gv.removeDeadConstantUsers();
+        if (!gv.use_empty()) continue;
+        gv.eraseFromParent();
+        dropped = true;
+      }
+    }
+    // What is left is the program's: each resolves to its symbol in the
+    // program's object, through the indirection the object format gives a
+    // reference to another object (a GOT entry; COFF's import pointer).
+    const bool coff = Triple(mod.getTargetTriple()).isOSBinFormatCOFF();
+    for (auto& gv : snap->global_values()) {
+      if (&gv == opt) continue;
+      auto* own = mod.getNamedValue(gv.getName());
+      assert(own && "a snapshot names a symbol the program lacks");
+      // Save a constant whose address means nothing (a string's bytes), which
+      // the snapshot keeps a copy of: made external, the program's pipeline
+      // could no longer merge it with its duplicates.
+      auto* var = dyn_cast<GlobalVariable>(&gv);
+      if (var && var->isConstant() && !var->isDeclaration() &&
+          own->hasLocalLinkage() && own->hasAtLeastLocalUnnamedAddr()) {
+        var->setLinkage(GlobalValue::PrivateLinkage);
+        continue;
+      }
+      if (own->hasLocalLinkage()) {
+        own->setLinkage(GlobalValue::ExternalLinkage);
+        own->setVisibility(GlobalValue::DefaultVisibility);
+        own->setUnnamedAddr(GlobalValue::UnnamedAddr::None);
+      }
+      if (!gv.isDeclaration())
+        gv.setLinkage(GlobalValue::AvailableExternallyLinkage);
+      gv.setVisibility(GlobalValue::DefaultVisibility);
+      gv.setDSOLocal(false);
+      if (coff && isa<GlobalVariable>(gv) && !own->isDeclaration())
+        gv.setDLLStorageClass(GlobalValue::DLLImportStorageClass);
+    }
+    assert(!verifyModule(*snap, &errs()));
+    std::string bitcode;
+    raw_string_ostream os(bitcode);
+    WriteBitcodeToFile(*snap, os);
+    os.flush();
+    return bitcode;
+  }
+
+  // `f`, past the cut, counts its calls down from what the host stores in
+  // `<f>.calls` once the module is linked, and the call that takes it to zero
+  // asks for `f` to be optimized again (Reoptimizer). The count starts at
+  // zero, so a run the host does not arm never asks.
+  static void count_calls(llvm::Function& f, int64_t id) {
+    using namespace llvm;
+    auto& mod = *f.getParent();
+    auto& ctx = mod.getContext();
+    auto* ptrTy = PointerType::get(ctx, 0);
+    auto* i64Ty = Type::getInt64Ty(ctx);
+    auto* calls = new GlobalVariable(mod, i64Ty, /*isConstant=*/false,
+                                     GlobalValue::ExternalLinkage,
+                                     ConstantInt::get(i64Ty, 0),
+                                     f.getName() + ".calls");
+    auto* host = mod.getNamedGlobal(kReoptContext);
+    if (!host)
+      host = new GlobalVariable(mod, ptrTy, /*isConstant=*/false,
+                                GlobalValue::ExternalLinkage,
+                                ConstantPointerNull::get(ptrTy), kReoptContext);
+    // At the end of the entry block, which keeps its allocas (the lowering
+    // interleaves them with their initial stores) static.
+    auto& head = f.getEntryBlock();
+    auto* counted = head.splitBasicBlock(head.getTerminator(), "calls.counted");
+    auto* ask = BasicBlock::Create(ctx, "calls.ask", &f, counted);
+    head.getTerminator()->eraseFromParent();
+    IRBuilder<> b(&head);
+    auto* before = b.CreateAtomicRMW(AtomicRMWInst::Sub, calls, b.getInt64(1),
+                                     MaybeAlign(8), AtomicOrdering::Monotonic);
+    b.CreateCondBr(b.CreateICmpEQ(before, b.getInt64(1)), ask, counted);
+    b.SetInsertPoint(ask);
+    auto request = mod.getOrInsertFunction(
+        kReoptRequest, FunctionType::get(b.getVoidTy(), {ptrTy, i64Ty}, false));
+    b.CreateCall(request, {b.CreateLoad(ptrTy, host), b.getInt64(id)})
+        ->setDoesNotThrow();
+    b.CreateBr(counted);
+  }
+
   // Every use of `f` — a direct call, the code a closure carries, its own
   // recursion — moves to `<f>.entry`, which jumps to the code `<f>.code`
   // points at, `f` until something else is stored there. The pointer is
   // external so that the pipeline, which sees no store to it, cannot fold it.
   static void reach_through_code_pointer(llvm::Function& f) {
     using namespace llvm;
-    f.setMetadata(kReoptimizable, nullptr);
     auto& mod = *f.getParent();
     auto* ptrTy = PointerType::get(mod.getContext(), 0);
     const std::string name = f.getName().str();
@@ -5799,15 +5999,151 @@ struct JIT {
 
   // --- Execution ---
 
+  // Optimizes again the functions past the cut that a run calls often
+  // (keep_big_functions_unoptimized, docs/internals/vm.md §7): a function's
+  // counter calls request_from_code, which compiles its snapshot at -O2 into
+  // this run's LLJIT and stores the code in `<f>.code`, which every caller
+  // and closure already goes through. Frames still in the old code finish
+  // there; the LLJIT keeps it mapped until the run ends.
+  class Reoptimizer {
+   public:
+    // CULEBRA_JIT_REOPTIMIZE: `wait` compiles on the thread whose call
+    // reached the count, `off` (the default) never compiles.
+    enum class Mode { off, wait };
+    static Mode mode() {
+      static const Mode m = [] {
+        const char* v = std::getenv("CULEBRA_JIT_REOPTIMIZE");
+        if (!v || !*v || std::string_view(v) == "off") return Mode::off;
+        if (std::string_view(v) == "wait") return Mode::wait;
+        std::fprintf(stderr,
+                     "culebra: CULEBRA_JIT_REOPTIMIZE=%s is not one of wait, "
+                     "off; taking off\n", v);
+        return Mode::off;
+      }();
+      return m;
+    }
+
+    // CULEBRA_JIT_REOPTIMIZE_CALLS: how many calls make a function worth it.
+    static int64_t calls_before() {
+      static const int64_t n = [] {
+        const char* v = std::getenv("CULEBRA_JIT_REOPTIMIZE_CALLS");
+        long long k = v ? std::strtoll(v, nullptr, 10) : 0;
+        return k > 0 ? static_cast<int64_t>(k) : int64_t{100};
+      }();
+      return n;
+    }
+
+    // Arms the counters of the module `jit` has linked: from here on a
+    // function's count reaching zero asks this Reoptimizer.
+    Reoptimizer(llvm::orc::LLJIT& jit, std::vector<Reoptimizable> fns)
+        : jit_(jit) {
+      auto addr = [&](const std::string& name) -> void* {
+        auto sym = jit.lookup(name);
+        if (sym) return sym->toPtr<void*>();
+        llvm::consumeError(sym.takeError());
+        return nullptr;
+      };
+      auto* host = static_cast<Reoptimizer**>(addr(kReoptContext));
+      if (!host) return;
+      *host = this;
+      // A function's place is its id, the one its counter passes.
+      for (auto& f : fns) {
+        auto* code = static_cast<void**>(addr(f.name + ".code"));
+        auto* calls = static_cast<int64_t*>(addr(f.name + ".calls"));
+        fns_.push_back({std::move(f.name), std::move(f.bitcode), code,
+                        /*asked=*/!code || !calls});
+        if (fns_.back().asked) continue;
+        std::atomic_ref<int64_t>(*calls).store(calls_before(),
+                                               std::memory_order_relaxed);
+      }
+    }
+
+    // Calls still arriving (an isolate the run has not joined yet) do
+    // nothing once the run is ending.
+    ~Reoptimizer() {
+      std::lock_guard lock(mu_);
+      closed_ = true;
+    }
+
+    // What a counter calls (kReoptRequest), with the module's context.
+    static void request_from_code(Reoptimizer* self, int64_t id) noexcept {
+      if (self) self->request(static_cast<size_t>(id));
+    }
+
+   private:
+    struct Fn {
+      std::string name;
+      std::string bitcode;
+      void** code;
+      bool asked = false;
+    };
+
+    void request(size_t id) noexcept {
+      std::lock_guard lock(mu_);
+      if (closed_ || id >= fns_.size() || fns_[id].asked) return;
+      fns_[id].asked = true;
+      try {
+        compile(fns_[id]);
+      } catch (const std::exception& e) {
+        report(fns_[id], e.what());
+      }
+    }
+
+    void compile(Fn& f) {
+      using namespace llvm;
+      auto t0 = std::chrono::steady_clock::now();
+      auto ctx = std::make_unique<LLVMContext>();
+      auto mod = parseBitcodeFile(
+          MemoryBufferRef(f.bitcode, f.name), *ctx);
+      if (!mod) return report(f, toString(mod.takeError()));
+      std::string().swap(f.bitcode);
+      optimize_module(**mod, 2);
+      Error err = Error::success();
+      if (auto object = object_for(**mod, /*fast_codegen=*/false)) {
+        err = jit_.addObjectFile(std::move(object));
+      } else {
+        err = jit_.addIRModule(orc::ThreadSafeModule(
+            std::move(*mod), orc::ThreadSafeContext(std::move(ctx))));
+      }
+      if (err) return report(f, toString(std::move(err)));
+      auto code = jit_.lookup(f.name + ".opt");
+      if (!code) return report(f, toString(code.takeError()));
+      std::atomic_ref<void*>(*f.code).store(code->toPtr<void*>(),
+                                            std::memory_order_release);
+      os_release_free_heap();
+      if (time_passes())
+        std::fprintf(
+            stderr, "[jit-time] reopt    %8.1f ms  %s\n",
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t0).count(),
+            f.name.c_str());
+    }
+
+    // The function goes on in the code it has.
+    static void report(const Fn& f, const std::string& why) {
+      std::fprintf(stderr, "culebra: --jit could not optimize %s again: %s\n",
+                   f.name.c_str(), why.c_str());
+    }
+
+    llvm::orc::LLJIT& jit_;
+    std::vector<Fn> fns_;
+    std::mutex mu_;
+    bool closed_ = false;
+  };
+
   // `cached` is the module's object from an earlier run (cached_object, or
   // keyed_object): given one, it is linked and the module is dropped unread.
   static void exec(std::unique_ptr<llvm::LLVMContext> ctx,
                    std::unique_ptr<llvm::Module> mod,
                    bool fast_codegen = false,
-                   std::unique_ptr<llvm::MemoryBuffer> cached = nullptr) {
+                   std::unique_ptr<llvm::MemoryBuffer> cached = nullptr,
+                   std::vector<Reoptimizable> reoptimizable = {}) {
     using namespace llvm;
     auto phase_t = std::chrono::steady_clock::now();
     auto jit = create_jit_instance(fast_codegen);
+    // Between `jit` and the guard below: it compiles into `jit`, and an
+    // isolate can call into it until the guard has joined them all.
+    std::optional<Reoptimizer> reoptimizer;
     // Declared after `jit`, so on any exit path it runs before `jit` tears
     // down: every isolate's compiled body is the same JitClosure::fn_ptr in
     // this LLJIT, and one still running when the code is freed returns into
@@ -5830,6 +6166,8 @@ struct JIT {
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();
     if (time_passes()) reportAndResetTimings();
     time_phase("codegen", phase_t);
+    if (!reoptimizable.empty() && Reoptimizer::mode() != Reoptimizer::Mode::off)
+      reoptimizer.emplace(*jit, std::move(reoptimizable));
     // The compile's memory is freed by now, but glibc returns only the top of
     // its heap by itself: without this a long run goes on holding it (some
     // 570 MB for a 3D game).

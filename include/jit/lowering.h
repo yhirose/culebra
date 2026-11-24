@@ -93,18 +93,21 @@ struct Lowering {
     auto phase_t = std::chrono::steady_clock::now();
     lower_program(jit, p, opt_level > 0, "__culebra_main", baked);
     JIT::time_phase("lower", phase_t);
+    // Here alone: the baked preamble and `culebra build` pay their compile
+    // once, at build, and run many times. Before the cache is asked, since a
+    // hit still needs the snapshots of the functions past the cut.
+    std::vector<JIT::Reoptimizable> reoptimizable;
+    if (opt_level > 0) {
+      reoptimizable = JIT::keep_big_functions_unoptimized(*mod);
+      JIT::time_phase("cut", phase_t);
+    }
     // The object cache's two keys (JIT::FileObjectCache), in the order they
     // can answer: the source key before the IR pipeline, which a hit skips
     // along with the backend, and the object key after it, which skips the
     // backend alone. --emit-llvm prints the pipeline's output and asks neither.
     auto cached = emit_llvm ? nullptr : JIT::cached_object(source_key);
     if (!cached) {
-      if (opt_level > 0) {
-        // Here alone: the baked preamble and `culebra build` pay their
-        // compile once, at build, and run many times.
-        JIT::keep_big_functions_unoptimized(*mod);
-        JIT::optimize_module(*mod, opt_level);
-      }
+      if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
       JIT::time_phase("optimize", phase_t);
       if (!emit_llvm) cached = JIT::keyed_object(*mod, source_key, fast_codegen);
     }
@@ -113,7 +116,7 @@ struct Lowering {
       mod->print(outs(), nullptr);
     } else {
       JIT::exec(std::move(ctx), std::move(mod), fast_codegen,
-                std::move(cached));
+                std::move(cached), std::move(reoptimizable));
     }
   }
 
