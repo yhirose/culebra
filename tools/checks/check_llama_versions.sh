@@ -31,18 +31,32 @@ if [[ ! -e "$lib/.git" ]]; then
   exit 1
 fi
 
-tag=$(git -C "$lib" describe --tags --exact-match 2>/dev/null || true)
-if [[ -z "$tag" ]]; then
-  at=$(git -C "$lib" describe --tags --always 2>/dev/null || echo unknown)
-  echo "llama-versions FAIL: $lib is at $at, not at a release tag" >&2
-  echo "  It is pinned to the tag named for the llama.cpp release: $version" >&2
-  echo "  (or $version.N for a revision of the wrapper alone)." >&2
-  exit 1
+# The tags naming the pinned commit. Which tags a checkout holds depends on how
+# it was made: a shallow clone (CI's) leaves out a tag on a commit behind the
+# branch head, so when the checkout holds none, the remote says.
+head=$(git -C "$lib" rev-parse HEAD)
+tags=$(git -C "$lib" tag --points-at HEAD)
+if [[ -z "$tags" ]]; then
+  if ! remote=$(git -C "$lib" ls-remote --tags origin 2>/dev/null); then
+    echo "llama-versions FAIL: $lib holds no tag for ${head:0:7}, and its remote could not be asked" >&2
+    exit 1
+  fi
+  # an annotated tag names its commit on the peeled line, refs/tags/<name>^{}
+  tags=$(awk -v h="$head" '$1 == h { n = $2; sub(/^refs\/tags\//, "", n); sub(/\^\{\}$/, "", n); print n }' <<< "$remote" | sort -u)
 fi
 # The wrapper's tag is the release it was tested against, with a fourth number
 # for a revision of the wrapper alone (v0.8.0.1 is still built on v0.8.0).
-if [[ "$tag" != "$version"* || ! ${tag#"$version"} =~ ^(\.[0-9]+)?$ ]]; then
-  echo "llama-versions FAIL: $lib is at $tag, but $cfg builds llama.cpp $version" >&2
+tag=""
+for t in $tags; do
+  if [[ "$t" == "$version"* && ${t#"$version"} =~ ^(\.[0-9]+)?$ ]]; then
+    tag=$t
+    break
+  fi
+done
+if [[ -z "$tag" ]]; then
+  echo "llama-versions FAIL: $lib is at ${head:0:7} (tags: $(echo ${tags:-none})), not at a release tag for llama.cpp $version" >&2
+  echo "  It is pinned to the tag named for the llama.cpp release: $version" >&2
+  echo "  (or $version.N for a revision of the wrapper alone)." >&2
   exit 1
 fi
 
