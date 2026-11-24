@@ -12,8 +12,13 @@
 #include <vm/script_teardown.h>  // ScriptTeardownGuard, at the end of exec()
 #include <base/os_compat.h>  // os_release_free_heap, once codegen is done
 
+#include <atomic>
 #include <chrono>  // time_phase (CULEBRA_JIT_TIME_PASSES)
+#include <condition_variable>  // Reoptimizer's queue
+#include <deque>
 #include <filesystem>  // the object cache's directory
+#include <mutex>
+#include <thread>  // Reoptimizer's compiler
 
 #include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
@@ -1775,7 +1780,10 @@ struct JIT {
     for (auto* join : v.joins) llvm::MergeBlockIntoPredecessor(join);
   }
 
-  static void optimize_module(llvm::Module& mod, int opt_level) {
+  // `cancel`, once set, skips every pass that is not required, so a run that
+  // is ending waits for the pass in hand alone.
+  static void optimize_module(llvm::Module& mod, int opt_level,
+                              const std::atomic<bool>* cancel = nullptr) {
     using namespace llvm;
     for (auto& f : mod) {
       settle_pad_release_tests(f, /*keep_test=*/true);
@@ -1787,6 +1795,9 @@ struct JIT {
     // instrumentation; without it the attribute reaches the backend alone.
     OptNoneInstrumentation optnone(/*DebugLogging=*/false);
     optnone.registerCallbacks(PIC);
+    if (cancel)
+      PIC.registerShouldRunOptionalPassCallback(
+          [cancel](StringRef, Any) { return !cancel->load(); });
     TimePassesHandler pass_timer(time_passes());
     pass_timer.registerCallbacks(PIC);
     PassBuilder PB(nullptr, PipelineTuningOptions(), std::nullopt, &PIC);
@@ -6004,21 +6015,28 @@ struct JIT {
   // counter calls request_from_code, which compiles its snapshot at -O2 into
   // this run's LLJIT and stores the code in `<f>.code`, which every caller
   // and closure already goes through. Frames still in the old code finish
-  // there; the LLJIT keeps it mapped until the run ends.
+  // there; the LLJIT keeps it mapped until the run ends. (On AArch64 the
+  // thread that next calls the function runs code it has never fetched,
+  // published by the release store after ORC flushed it: what JIT engines
+  // rely on there, short of an `isb` on every reader.)
   class Reoptimizer {
    public:
-    // CULEBRA_JIT_REOPTIMIZE: `wait` compiles on the thread whose call
-    // reached the count, `off` (the default) never compiles.
-    enum class Mode { off, wait };
+    // CULEBRA_JIT_REOPTIMIZE: unset (or `background`), a thread of its own
+    // compiles while the program goes on; `wait` compiles on the thread whose
+    // call reached the count, so the next call runs the optimized code (for
+    // tests and benches); `off` never compiles.
+    enum class Mode { background, wait, off };
     static Mode mode() {
       static const Mode m = [] {
         const char* v = std::getenv("CULEBRA_JIT_REOPTIMIZE");
-        if (!v || !*v || std::string_view(v) == "off") return Mode::off;
-        if (std::string_view(v) == "wait") return Mode::wait;
+        const std::string_view s = v ? v : "";
+        if (s.empty() || s == "background") return Mode::background;
+        if (s == "wait") return Mode::wait;
+        if (s == "off") return Mode::off;
         std::fprintf(stderr,
-                     "culebra: CULEBRA_JIT_REOPTIMIZE=%s is not one of wait, "
-                     "off; taking off\n", v);
-        return Mode::off;
+                     "culebra: CULEBRA_JIT_REOPTIMIZE=%s is not one of "
+                     "background, wait, off; taking background\n", v);
+        return Mode::background;
       }();
       return m;
     }
@@ -6058,12 +6076,7 @@ struct JIT {
       }
     }
 
-    // Calls still arriving (an isolate the run has not joined yet) do
-    // nothing once the run is ending.
-    ~Reoptimizer() {
-      std::lock_guard lock(mu_);
-      closed_ = true;
-    }
+    ~Reoptimizer() { stop(); }
 
     // What a counter calls (kReoptRequest), with the module's context.
     static void request_from_code(Reoptimizer* self, int64_t id) noexcept {
@@ -6082,14 +6095,97 @@ struct JIT {
       std::lock_guard lock(mu_);
       if (closed_ || id >= fns_.size() || fns_[id].asked) return;
       fns_[id].asked = true;
-      try {
+      // Under the lock: one compile at a time, whichever thread asks.
+      if (mode() == Mode::wait) return compile(fns_[id]);
+      queue_.push_back(id);
+      if (!worker_.joinable()) {
+        try {
+          enlist(this);
+          worker_ = std::thread([this] { work(); });
+        } catch (const std::exception& e) {
+          queue_.clear();
+          return report(fns_[id], e.what());
+        }
+      }
+      ready_.notify_one();
+    }
+
+    void work() {
+      std::unique_lock lock(mu_);
+      for (;;) {
+        ready_.wait(lock, [&] { return closed_ || !queue_.empty(); });
+        if (closed_) {
+          for (const size_t id : queue_) cancelled(fns_[id]);
+          return;
+        }
+        const size_t id = queue_.front();
+        queue_.pop_front();
+        lock.unlock();
         compile(fns_[id]);
-      } catch (const std::exception& e) {
-        report(fns_[id], e.what());
+        lock.lock();
       }
     }
 
-    void compile(Fn& f) {
+    // The run is ending: calls still arriving (an isolate not yet joined) do
+    // nothing, what is queued is dropped, and a compile under way skips the
+    // rest of its pipeline (the backend, once begun, runs to its end).
+    void stop() {
+      {
+        std::lock_guard lock(mu_);
+        closed_ = true;
+        cancel_ = true;
+      }
+      ready_.notify_all();
+      std::call_once(joined_, [&] {
+        if (worker_.joinable()) worker_.join();
+      });
+      delist(this);
+    }
+
+    // Sys.exit leaves without unwinding the run, so its Reoptimizer would
+    // never stop: the worker would go on in LLVM while the process tears
+    // LLVM's statics down. An atexit handler stops every Reoptimizer with a
+    // worker first, registered after the list it reads exists, so that the
+    // list outlives it.
+    struct Live {
+      std::mutex mu;
+      std::vector<Reoptimizer*> all;
+    };
+    static Live& live() {
+      static Live l;
+      return l;
+    }
+    static void enlist(Reoptimizer* r) {
+      auto& l = live();
+      static std::once_flag registered;
+      std::call_once(registered, [] {
+        std::atexit([] {
+          std::vector<Reoptimizer*> all;
+          {
+            std::lock_guard lock(live().mu);
+            all = live().all;
+          }
+          for (auto* r : all) r->stop();
+        });
+      });
+      std::lock_guard lock(l.mu);
+      l.all.push_back(r);
+    }
+    static void delist(Reoptimizer* r) {
+      auto& l = live();
+      std::lock_guard lock(l.mu);
+      std::erase(l.all, r);
+    }
+
+    void compile(Fn& f) noexcept {
+      try {
+        compile_or_throw(f);
+      } catch (const std::exception& e) {
+        report(f, e.what());
+      }
+    }
+
+    void compile_or_throw(Fn& f) {
       using namespace llvm;
       auto t0 = std::chrono::steady_clock::now();
       auto ctx = std::make_unique<LLVMContext>();
@@ -6097,7 +6193,8 @@ struct JIT {
           MemoryBufferRef(f.bitcode, f.name), *ctx);
       if (!mod) return report(f, toString(mod.takeError()));
       std::string().swap(f.bitcode);
-      optimize_module(**mod, 2);
+      optimize_module(**mod, 2, &cancel_);
+      if (cancel_) return cancelled(f);
       Error err = Error::success();
       if (auto object = object_for(**mod, /*fast_codegen=*/false)) {
         err = jit_.addObjectFile(std::move(object));
@@ -6119,6 +6216,12 @@ struct JIT {
             f.name.c_str());
     }
 
+    static void cancelled(const Fn& f) {
+      if (time_passes())
+        std::fprintf(stderr, "[jit-time] reopt    cancelled  %s\n",
+                     f.name.c_str());
+    }
+
     // The function goes on in the code it has.
     static void report(const Fn& f, const std::string& why) {
       std::fprintf(stderr, "culebra: --jit could not optimize %s again: %s\n",
@@ -6128,7 +6231,12 @@ struct JIT {
     llvm::orc::LLJIT& jit_;
     std::vector<Fn> fns_;
     std::mutex mu_;
+    std::condition_variable ready_;
+    std::deque<size_t> queue_;
     bool closed_ = false;
+    std::atomic<bool> cancel_ = false;
+    std::thread worker_;
+    std::once_flag joined_;
   };
 
   // `cached` is the module's object from an earlier run (cached_object, or
