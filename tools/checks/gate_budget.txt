@@ -331,7 +331,9 @@ vm_cases 191
 # per-key answers, "shift" as one key over both Shift keys; 0.00 s).
 # 43 since jit_big_function_test (a function past 4096 blocks is compiled
 # optnone + noinline, read off the IR; 0.15 s).
-ctest.entries 43
+# 44 since sys_exit_test (Sys.exit from nine threads at once ends the process
+# once, and an open file and TL_PROFILE's table survive it; 1.4 s).
+ctest.entries 44
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.
