@@ -66,10 +66,11 @@ assert_eq(found(checked.search("\"stacked jump\"")), ["a"])
 // proves "behind" is in the index nowhere -- an Or lists both terms' hits,
 // so an indexed "behind" would show as twelve.
 assert_eq(checked.search("behind")[0].ranges.size(), 6)
-// A query for a real word carries "stacked" too, so its hits are the
-// word's own plus stacked's six; the word's own range is still the word.
+// A query for a real word carries "stacked" too. At the word's position both
+// highlight the word's one range, so the hits are stacked's six, and the
+// word's own range among them is still the word.
 let jump = checked.search("jump")[0].ranges
-assert_eq(jump.size(), 7)
+assert_eq(jump.size(), 6)
 let own = jump.filter(|r| r.length == 5)[0]
 assert_eq(text.slice(own.position, own.position + own.length), "jumps")
 checked.close()
