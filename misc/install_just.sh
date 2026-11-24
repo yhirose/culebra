@@ -4,14 +4,8 @@
 #
 #   misc/install_just.sh [dest dir]     # default /usr/local/bin
 #
-# The one place the version lives: .github/actions/install-just,
-# misc/setup_ubuntu.sh and misc/repro_ubuntu/Dockerfile all run this, so CI,
-# a fresh machine and the container never install different binaries.
-#
-# The release asset rather than just.systems/install.sh, which is all that
-# script fetches anyway: that host 403s the shared runner IPs often enough to
-# exhaust a three-attempt retry loop. Ubuntu 24.04's apt-shipped just predates
-# the [group(...)] attribute (just 1.27.0+).
+# The one place the pin lives (CI, setup_ubuntu.sh and the repro image run
+# it). Not just.systems/install.sh: that host 403s shared runner IPs.
 set -euo pipefail
 
 dest=${1:-/usr/local/bin}

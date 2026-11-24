@@ -1,25 +1,20 @@
 # The Ubuntu toolchain ci.yml's Linux jobs build with, for reproducing a
 # failure that only shows there (.github/actions/setup-linux-toolchain).
-# Not part of the build: `docker build -f misc/repro_ubuntu/Dockerfile .` (the
-# context is the checkout's root: the build copies two files from misc/).
+# Not part of the build: `docker build -f misc/repro_ubuntu/Dockerfile .`, from
+# the checkout's root (it copies from misc/).
 #
 # Also the base image for .devcontainer/devcontainer.json (GitHub Codespaces
 # / VS Code Dev Containers) — a toolchain bump here reaches both consumers.
 #
-# It also builds a Linux arm64 culebra, which no release ships, on an Apple
-# Silicon Mac: Docker builds the image natively there. With the window and
-# Scene, as a release has them:
+# On an Apple Silicon Mac it builds a Linux arm64 driver natively (no release
+# ships one), with the window and Scene; build.sh prints what it needs to run.
+# The volumes keep this checkout's build dir and a ccache every checkout shares:
 #
 #   docker build --build-arg WINDOW=ON -t culebra-ubuntu:window \
 #     -f misc/repro_ubuntu/Dockerfile .
-#   docker run --rm -v "$PWD":/src -v culebra-ccache:/root/.cache/ccache \
+#   docker run --rm -v "$PWD":/src -v "culebra-build-$(basename "$PWD")":/build \
+#     -v culebra-ccache:/root/.cache/ccache \
 #     culebra-ubuntu:window misc/repro_ubuntu/build.sh
-#
-# The named volume keeps ccache between runs (the container's own copy goes
-# with --rm); the source is always /src, so a new worktree hits it too.
-#
-# build-linux/culebra then runs on a Linux whose glibc and libstdc++ are at
-# least the versions build.sh prints at the end (Ubuntu 24.04's toolchain).
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -36,24 +31,17 @@ RUN apt-get update && apt-get install -y \
  && apt-get install -y llvm-22-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# A separate layer: just's version and checksum change on their own, and a
-# just-only bump shouldn't invalidate the apt+LLVM layer above and force a
-# multi-minute reinstall of it. misc/install_just.sh holds the pin (CI and
-# setup_ubuntu.sh run it too) and picks the asset for this machine's
-# architecture, so the image builds natively on arm64 (an Apple Silicon Mac's
-# Docker) as well as on x86-64.
+# Its own layer, so a just bump keeps the apt+LLVM one. The script holds the
+# pin for every architecture.
 COPY misc/install_just.sh /tmp/install_just.sh
 RUN /tmp/install_just.sh && rm /tmp/install_just.sh
 
-# WINDOW=ON adds SDL3's build dependencies, so the build carries the Canvas
-# window and Scene the way a release does; the default stays the display-less
-# build of ci.yml's Linux jobs. A build arg on a later layer rather than a
-# second image: the two share every layer above and cannot drift apart. The
-# list is the one CI installs, Wayland's included (the backend a handheld
-# running Sway opens).
+# WINDOW=ON adds SDL3's build dependencies (CI's list) for the window and
+# Scene; a later layer, so both images share the ones above.
 ARG WINDOW=OFF
 COPY misc/linux_sdl3_deps.txt /tmp/linux_sdl3_deps.txt
-RUN if [ "$WINDOW" = ON ]; then \
+RUN case "$WINDOW" in ON|OFF) ;; *) echo "WINDOW is ON or OFF" >&2; exit 1 ;; esac \
+ && if [ "$WINDOW" = ON ]; then \
       apt-get update \
       && grep -v -e '^#' -e '^$' /tmp/linux_sdl3_deps.txt | xargs apt-get install -y \
       && rm -rf /var/lib/apt/lists/*; \

@@ -1,13 +1,6 @@
-# SDL3's build dependencies on Ubuntu, one apt package a line. With them
-# installed CMake leaves the Canvas window and Scene at their Linux default
-# (ON). A missing one either fails SDL3's configure or drops that backend
-# without a word (Wayland's does; misc/repro_ubuntu/build.sh checks for it).
-# Build-time only: SDL3 dlopens X11, Wayland, GL and audio on first
-# use, so the binary gains no DT_NEEDED entry and still starts headless.
-# Tracks vendor/SDL/docs/README-linux.md.
-#
-# Read by .github/actions/setup-linux-toolchain (sdl3-deps: 'true') and
-# misc/repro_ubuntu/Dockerfile (--build-arg WINDOW=ON).
+# SDL3's build dependencies on Ubuntu, one apt package a line (tracks
+# vendor/SDL/docs/README-linux.md). Build-time only: SDL3 dlopens them.
+# Read by .github/actions/setup-linux-toolchain and misc/repro_ubuntu/Dockerfile.
 libasound2-dev
 libpulse-dev
 libaudio-dev
