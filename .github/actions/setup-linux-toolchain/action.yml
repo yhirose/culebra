@@ -12,9 +12,7 @@ inputs:
       window at its Linux default (ON). SDL3's configure hard-errors on a
       missing one rather than dropping that backend, so a job that wants the
       window and omits these silently builds the very thing it exists to test
-      out of the build. They are build-time only: SDL3 dlopens X11/GL/audio on
-      first use, so the binary gains no DT_NEEDED entry and still starts on a
-      headless machine. Tracks vendor/SDL/docs/README-linux.md.
+      out of the build. The list is misc/linux_sdl3_deps.txt.
     default: 'false'
   webview-deps:
     description: >-
@@ -48,14 +46,12 @@ runs:
         pkgs=(ccache cmake g++-14 libblas-dev mold wget libasound2-dev
               lsb-release software-properties-common gnupg)
         if [ "$SDL3_DEPS" = true ]; then
-          pkgs+=(libasound2-dev libpulse-dev libaudio-dev libfribidi-dev
-                 libjack-dev libsndio-dev libx11-dev libxext-dev libxrandr-dev
-                 libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev
-                 libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev
-                 libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev
-                 libibus-1.0-dev libudev-dev libthai-dev libusb-1.0-0-dev
-                 libpipewire-0.3-dev libwayland-dev libdecor-0-dev
-                 liburing-dev)
+          # misc/repro_ubuntu/Dockerfile installs the same list.
+          # An assignment, not mapfile < <(...): a list that cannot be read
+          # then fails the step here, rather than installing nothing.
+          sdl3=$(grep -v -e '^#' -e '^$' misc/linux_sdl3_deps.txt)
+          # shellcheck disable=SC2206
+          pkgs+=($sdl3)
         fi
         if [ "$WEBVIEW_DEPS" = true ]; then
           pkgs+=(libgtk-4-dev libwebkitgtk-6.0-dev)

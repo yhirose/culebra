@@ -3,12 +3,12 @@
 #
 #   ./misc/setup_ubuntu.sh
 #
-# Mirrors .github/actions/setup-linux-toolchain and install-just, which is
-# the single source of truth this tracks — see those two files first if a
-# package or version here looks stale. Only the base toolchain (no SDL3/
-# Webview build deps, which the CI action gates behind flags for jobs that
-# open a window); those two use apt package lists in
-# .github/actions/setup-linux-toolchain/action.yml if you need them too.
+# Mirrors .github/actions/setup-linux-toolchain, the single source of truth
+# this tracks (just comes from misc/install_just.sh, which CI runs too) — see
+# that file first if a package or version here looks stale. Only the base
+# toolchain (no SDL3/Webview build deps, which the CI action gates behind
+# flags for jobs that open a window). SDL3's are misc/linux_sdl3_deps.txt;
+# Webview's are in that action.
 #
 # Tested against Ubuntu 24.04 (what CI runs on). Requires sudo.
 set -eu
@@ -24,19 +24,7 @@ sudo apt-get install -y \
   lsb-release software-properties-common gnupg
 
 echo "==> Installing just"
-# The release asset, pinned to its published checksum, rather than
-# just.systems/install.sh — matches install-just/action.yml. Ubuntu's
-# apt-shipped just predates the [group(...)] attribute (just 1.27.0+).
-just_ver=1.58.0
-just_sha=4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d
-just_base=https://github.com/casey/just/releases/download
-curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-delay 5 \
-  -o /tmp/culebra-just.tar.gz \
-  "$just_base/$just_ver/just-$just_ver-x86_64-unknown-linux-musl.tar.gz"
-echo "$just_sha  /tmp/culebra-just.tar.gz" | sha256sum -c -
-sudo tar -xzf /tmp/culebra-just.tar.gz -C /usr/local/bin just
-rm /tmp/culebra-just.tar.gz
-just --version
+sudo "$(dirname "$0")/install_just.sh"
 
 echo "==> Installing LLVM 22"
 # Ubuntu 24.04's default llvm-dev (17/18) is too old — culebra's JIT uses

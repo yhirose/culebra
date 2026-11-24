@@ -32,6 +32,12 @@ headless Ubuntu: `just test-dev` / `just test` build and run fine, but
 Canvas/Scene/Webview real-window tests and the Tensor CUDA backend don't
 run there, the same gap as any Ubuntu CI job.
 
+No release ships Linux arm64. The same image builds one natively in Docker
+on an Apple Silicon Mac, with the window, `Scene` and the JIT, as the
+header of [`misc/repro_ubuntu/Dockerfile`](misc/repro_ubuntu/Dockerfile)
+shows; its `build.sh` prints the glibc and libstdc++ versions the binary
+needs on the machine it is carried to.
+
 ```bash
 just build              # with JIT (Release + LTO)
 just build-no-jit       # no LLVM: interpreter + bytecode VM, ~1 MB binary

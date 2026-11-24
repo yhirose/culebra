@@ -10,19 +10,6 @@ runs:
   steps:
     - name: Install just
       shell: bash
-      run: |
-        # The release asset rather than just.systems/install.sh, which is all
-        # that script fetches anyway: that host 403s the shared runner IPs
-        # often enough to exhaust a three-attempt retry loop and take a whole
-        # run down with it. Pinned to its published checksum, so every lane
-        # installs the same binary. Every caller runs on x86_64 Ubuntu.
-        ver=1.58.0
-        sha=4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d
-        base=https://github.com/casey/just/releases/download
-        curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-delay 5 \
-          -o /tmp/just.tar.gz \
-          "$base/$ver/just-$ver-x86_64-unknown-linux-musl.tar.gz"
-        echo "$sha  /tmp/just.tar.gz" | sha256sum -c -
-        sudo tar -xzf /tmp/just.tar.gz -C /usr/local/bin just
-        rm /tmp/just.tar.gz
-        just --version
+      # misc/install_just.sh holds the pin, so this, setup_ubuntu.sh and the
+      # repro container install the same binary.
+      run: sudo misc/install_just.sh

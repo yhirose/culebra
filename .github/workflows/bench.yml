@@ -45,10 +45,6 @@ jobs:
             gnupg \
             lua5.4 \
             guile-3.0
-          # Ubuntu 24.04's apt-shipped `just` predates the [group(...)]
-          # attribute (just 1.27.0+). Install from the official script.
-          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-            | sudo bash -s -- --to /usr/local/bin
           # Ubuntu 24.04's default llvm-dev (17/18) is too old — culebra's
           # JIT uses LLVM 20+ APIs. Pull LLVM 22 from apt.llvm.org to
           # match the local dev environment (README references LLVM 22).
@@ -62,6 +58,10 @@ jobs:
             echo "CXX=g++-14"
             echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22"
           } >> "$GITHUB_ENV"
+
+      - name: Install just (Ubuntu)
+        if: matrix.os == 'ubuntu-24.04'
+        uses: ./.github/actions/install-just
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'

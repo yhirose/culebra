@@ -13,7 +13,9 @@
 {
   "name": "culebra",
   "build": {
-    "dockerfile": "../misc/repro_ubuntu/Dockerfile"
+    "dockerfile": "../misc/repro_ubuntu/Dockerfile",
+    // The checkout's root, not this folder: the Dockerfile copies from misc/.
+    "context": ".."
   },
   "workspaceFolder": "/src",
   "workspaceMount": "source=${localWorkspaceFolder},target=/src,type=bind,consistency=cached",
