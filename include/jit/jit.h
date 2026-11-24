@@ -50,6 +50,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"  // settle_pad_release_tests
 #include "llvm/Transforms/Utils/Local.h"  // settle_pad_release_tests
 #include "llvm/Transforms/Utils/Cloning.h"  // snapshot_for_reoptimizing
+#include "llvm/Transforms/Utils/ModuleUtils.h"  // nameUnamedGlobals
 #include "llvm/Bitcode/BitcodeReader.h"  // a snapshot, read back by Reoptimizer
 #include "llvm/Bitcode/BitcodeWriter.h"  // a snapshot, written
 
@@ -940,9 +941,10 @@ struct JIT {
       llvm::Module& mod, const std::string& source_key, bool fast_codegen) {
     auto* cache = object_cache();
     if (!cache || !FileObjectCache::is_key(source_key)) return nullptr;
-    auto object = object_for(mod, fast_codegen);
-    cache->remember(source_key, mod.getModuleIdentifier());
-    return object;
+    auto object_key = object_key_for(mod, fast_codegen);
+    mod.setModuleIdentifier(object_key);
+    cache->remember(source_key, object_key);
+    return cache->object(object_key);
   }
 
   // What a function past the cut is optimized again from: its name, the
@@ -995,17 +997,6 @@ struct JIT {
       rest = tail.substr(name_size + bitcode_size);
     }
     return snapshots;
-  }
-
-  // The same by the object key alone, which is all a module no source names
-  // has (a function optimized again while the program runs).
-  static std::unique_ptr<llvm::MemoryBuffer> object_for(llvm::Module& mod,
-                                                        bool fast_codegen) {
-    auto* cache = object_cache();
-    if (!cache) return nullptr;
-    auto object_key = object_key_for(mod, fast_codegen);
-    mod.setModuleIdentifier(object_key);
-    return cache->object(object_key);
   }
 
   // A salt uniquely identifying this binary, computed once. The executable's
@@ -1270,7 +1261,7 @@ struct JIT {
   // the way LLVM's ARC optimizer treats objc_retain/objc_release. The calls
   // are `nounwind`, so a settled one is never an `invoke`.
   struct DropSettledRefcounts : llvm::PassInfoMixin<DropSettledRefcounts> {
-    // Runs on an `optnone` function too (keep_big_functions_unoptimized), so
+    // Runs on an `optnone` function too (cut_big_functions), so
     // no_settled_refcounts holds for the whole module.
     static bool isRequired() { return true; }
     llvm::PreservedAnalyses run(llvm::Function& f,
@@ -1497,12 +1488,15 @@ struct JIT {
     static const bool on = std::getenv("CULEBRA_JIT_TIME_PASSES") != nullptr;
     return on;
   }
+  // `what`: the thing the phase was for, after the time (a function's name).
   static void time_phase(const char* name,
-                         std::chrono::steady_clock::time_point& t) {
+                         std::chrono::steady_clock::time_point& t,
+                         const std::string& what = {}) {
     if (!time_passes()) return;
     auto now = std::chrono::steady_clock::now();
-    std::fprintf(stderr, "[jit-time] %-8s %8.1f ms\n", name,
-                 std::chrono::duration<double, std::milli>(now - t).count());
+    std::fprintf(stderr, "[jit-time] %-8s %8.1f ms%s%s\n", name,
+                 std::chrono::duration<double, std::milli>(now - t).count(),
+                 what.empty() ? "" : "  ", what.c_str());
     t = now;
   }
 
@@ -1517,10 +1511,11 @@ struct JIT {
   // core for tens of seconds, and an exit would wait for its backend.
   static constexpr size_t kMaxReoptimizedBlocks = 4 * kMaxOptimizedBlocks;
 
-  // The cut counts a function as -O0 compiles it; optimized again, it is
-  // compiled with its Float copies and with what it inlines, several times
-  // that, which is the backend a run that ends first still waits for.
-  static std::vector<Reoptimizable> keep_big_functions_unoptimized(
+  // Marks each function past the cut -O0 and, when it may be optimized again,
+  // reaches it through a code pointer, snapshots it and counts its calls.
+  // The size counted is the -O0 one; optimized again, a function is compiled
+  // with its Float copies and what it inlines, several times that.
+  static std::vector<Reoptimizable> cut_big_functions(
       llvm::Module& mod, int opt_level) {
     struct Cut {
       llvm::Function* f;
@@ -1549,7 +1544,8 @@ struct JIT {
         reopt.push_back(c.f);
       }
     std::vector<Reoptimizable> snapshots;
-    if (!reopt.empty()) name_anonymous_globals(mod);
+    // A snapshot declares the program's own globals by name.
+    if (!reopt.empty()) llvm::nameUnamedGlobals(mod);
     for (auto* f : reopt)
       snapshots.push_back({f->getName().str(),
                            snapshot_for_reoptimizing(mod, *f, past_cut),
@@ -1557,7 +1553,6 @@ struct JIT {
     for (auto& c : cuts) {
       drop_float_copies(*c.f, c.versions);
       assert(c.f->size() == c.unversioned);
-      c.f->setMetadata(kReoptimizable, nullptr);
       c.f->removeFnAttr(llvm::Attribute::AlwaysInline);
       c.f->addFnAttr(llvm::Attribute::OptimizeNone);
       c.f->addFnAttr(llvm::Attribute::NoInline);
@@ -1578,19 +1573,10 @@ struct JIT {
   static constexpr const char* kReoptContext = "__culebra_reopt.ctx";
   static constexpr const char* kReoptRequest = "__culebra_reoptimize";
 
-  // A snapshot declares the program's own globals by name.
-  static void name_anonymous_globals(llvm::Module& mod) {
-    for (auto& gv : mod.global_values())
-      if (!gv.hasName()) gv.setName("__culebra.anon");
-  }
-
-  // The module `f` is optimized again from: `f` as it is before the cut,
-  // named `<f>.opt`, beside available_externally copies of what it reaches
-  // by direct calls (short of another function past the cut) and of the
-  // constants it reads, so the pipeline inlines and folds what it would have
-  // in the whole program. Everything else is a declaration of the program's
-  // own symbol, which this makes external before the program's pipeline runs,
-  // so that the pipeline cannot change it under the declaration.
+  // `f` before the cut as `<f>.opt`, with available_externally copies of what
+  // it calls directly and of the constants it reads, so its pipeline inlines
+  // and folds as the program's would; the rest declares the program's own
+  // symbols, made external here before the program's pipeline can change them.
   static std::string snapshot_for_reoptimizing(
       llvm::Module& mod, llvm::Function& f,
       const llvm::SmallPtrSetImpl<const llvm::Function*>& past_cut) {
@@ -1633,16 +1619,12 @@ struct JIT {
     auto* opt = cast<Function>(vmap[&f]);
     opt->setName(f.getName() + ".opt");
     opt->setLinkage(GlobalValue::ExternalLinkage);
-    // Cloned whole: drop what `<f>.opt` does not reach.
-    for (bool dropped = true; dropped;) {
-      dropped = false;
-      for (auto& gv : make_early_inc_range(snap->global_values())) {
-        if (&gv == opt) continue;
-        gv.removeDeadConstantUsers();
-        if (!gv.use_empty()) continue;
-        gv.eraseFromParent();
-        dropped = true;
-      }
+    // CloneModule declares every other global; drop those nothing uses (every
+    // copied definition is reached, so one pass leaves none behind).
+    for (auto& gv : make_early_inc_range(snap->global_values())) {
+      if (&gv == opt) continue;
+      gv.removeDeadConstantUsers();
+      if (gv.use_empty()) gv.eraseFromParent();
     }
     // What is left is the program's: each resolves to its symbol in the
     // program's object, through the indirection the object format gives a
@@ -1702,20 +1684,17 @@ struct JIT {
                                 ConstantPointerNull::get(ptrTy), kReoptContext);
     // At the end of the entry block, which keeps its allocas (the lowering
     // interleaves them with their initial stores) static.
-    auto& head = f.getEntryBlock();
-    auto* counted = head.splitBasicBlock(head.getTerminator(), "calls.counted");
-    auto* ask = BasicBlock::Create(ctx, "calls.ask", &f, counted);
-    head.getTerminator()->eraseFromParent();
-    IRBuilder<> b(&head);
+    auto* end = f.getEntryBlock().getTerminator();
+    IRBuilder<> b(end);
     auto* before = b.CreateAtomicRMW(AtomicRMWInst::Sub, calls, b.getInt64(1),
                                      MaybeAlign(8), AtomicOrdering::Monotonic);
-    b.CreateCondBr(b.CreateICmpEQ(before, b.getInt64(1)), ask, counted);
-    b.SetInsertPoint(ask);
+    b.SetInsertPoint(SplitBlockAndInsertIfThen(
+        b.CreateICmpEQ(before, b.getInt64(1)), end->getIterator(),
+        /*Unreachable=*/false, MDBuilder(ctx).createUnlikelyBranchWeights()));
     auto request = mod.getOrInsertFunction(
         kReoptRequest, FunctionType::get(b.getVoidTy(), {ptrTy, i64Ty}, false));
     b.CreateCall(request, {b.CreateLoad(ptrTy, host), b.getInt64(id)})
         ->setDoesNotThrow();
-    b.CreateBr(counted);
   }
 
   // Every use of `f` — a direct call, the code a closure carries, its own
@@ -1747,7 +1726,7 @@ struct JIT {
 
   // Marks the inline tag test of a release emitted inside a cleanup pad
   // (emit_value_release). Every mark is settled before the IR pipeline:
-  // keep_big_functions_unoptimized past the cut, optimize_module the rest.
+  // cut_big_functions past the cut, optimize_module the rest.
   static constexpr const char* kPadReleaseTest = "culebra.pad_release_test";
 
   // An optimized function keeps the test in its pads: without it the
@@ -6070,14 +6049,10 @@ struct JIT {
   // --- Execution ---
 
   // Optimizes again the functions past the cut that a run calls often
-  // (keep_big_functions_unoptimized, docs/internals/vm.md §7): a function's
-  // counter calls request_from_code, which compiles its snapshot at -O2 into
-  // this run's LLJIT and stores the code in `<f>.code`, which every caller
-  // and closure already goes through. Frames still in the old code finish
-  // there; the LLJIT keeps it mapped until the run ends. (On AArch64 the
-  // thread that next calls the function runs code it has never fetched,
-  // published by the release store after ORC flushed it: what JIT engines
-  // rely on there, short of an `isb` on every reader.)
+  // (cut_big_functions, docs/internals/vm.md §7): a counter's request
+  // compiles the snapshot into this run's LLJIT and stores the code in
+  // `<f>.code`; frames in the old code finish there. (AArch64 readers rely on
+  // ORC's cache flush before the release store, as JIT engines do, not `isb`.)
   class Reoptimizer {
    public:
     // CULEBRA_JIT_REOPTIMIZE: unset (or `background`), a thread of its own
@@ -6126,14 +6101,15 @@ struct JIT {
       auto* host = static_cast<Reoptimizer**>(addr(kReoptContext));
       if (!host) return;
       *host = this;
-      // A function's place is its id, the one its counter passes.
+      // A function's place is its id, the one its counter passes. A counter
+      // reaches zero once, so each armed function asks once.
       for (auto& f : fns) {
         auto* code = static_cast<void**>(addr(f.name + ".code"));
         auto* calls = static_cast<int64_t*>(addr(f.name + ".calls"));
-        fns_.push_back({std::move(f), code, /*asked=*/!code || !calls});
-        if (fns_.back().asked) continue;
-        std::atomic_ref<int64_t>(*calls).store(calls_before(),
-                                               std::memory_order_relaxed);
+        fns_.push_back({std::move(f), code});
+        if (code && calls)
+          std::atomic_ref<int64_t>(*calls).store(calls_before(),
+                                                 std::memory_order_relaxed);
       }
     }
 
@@ -6150,7 +6126,6 @@ struct JIT {
       {
         std::lock_guard lock(mu_);
         closed_ = true;
-        cancel_ = true;
       }
       ready_.notify_all();
       std::call_once(joined_, [&] {
@@ -6167,13 +6142,11 @@ struct JIT {
     struct Fn {
       Reoptimizable from;
       void** code;
-      bool asked = false;
     };
 
     void request(size_t id) noexcept {
       std::lock_guard lock(mu_);
-      if (closed_ || id >= fns_.size() || fns_[id].asked) return;
-      fns_[id].asked = true;
+      if (closed_ || id >= fns_.size()) return;
       // Under the lock: one compile at a time, whichever thread asks.
       if (mode() == Mode::wait) return compile(fns_[id]);
       queue_.push_back(id);
@@ -6204,12 +6177,9 @@ struct JIT {
       }
     }
 
-    // Sys.exit leaves without unwinding the run, from whichever thread calls
-    // it, so its Reoptimizer would never stop: a compile would go on in LLVM
-    // while the process tears LLVM's statics down, or start during it. An
-    // atexit handler stops every live Reoptimizer first, holding the list so
-    // that none is destroyed under it; it is registered after the list it
-    // reads exists, so that the list outlives it.
+    // Sys.exit does not unwind the run, so an atexit handler stops every live
+    // Reoptimizer before LLVM's statics go, holding the list so none is freed
+    // under it; registered after the list exists, so the list outlives it.
     struct Live {
       std::mutex mu;
       std::vector<Reoptimizer*> all;
@@ -6247,19 +6217,31 @@ struct JIT {
     void compile_or_throw(Fn& f) {
       using namespace llvm;
       auto t0 = std::chrono::steady_clock::now();
-      auto ctx = std::make_unique<LLVMContext>();
-      auto mod = parseBitcodeFile(
-          MemoryBufferRef(f.from.bitcode, f.from.name), *ctx);
-      if (!mod) return report(f, toString(mod.takeError()));
-      std::string().swap(f.from.bitcode);
-      optimize_module(**mod, f.from.opt_level, &cancel_);
-      if (cancel_) return cancelled(f);
+      // The object cache's two keys, as for the program: the snapshot under
+      // this binary (a hit skips the pipeline), then its optimized text.
+      const std::string source_key =
+          object_cache()
+              ? kCacheKeyTag + std::to_string(xxh3_64bits(
+                                   jit_cache_salt() + "|reopt|O" +
+                                   std::to_string(f.from.opt_level) + '|' +
+                                   f.from.bitcode))
+              : std::string("reopt");
       Error err = Error::success();
-      if (auto object = object_for(**mod, /*fast_codegen=*/false)) {
+      if (auto object = cached_object(source_key)) {
         err = jit_.addObjectFile(std::move(object));
       } else {
-        err = jit_.addIRModule(orc::ThreadSafeModule(
-            std::move(*mod), orc::ThreadSafeContext(std::move(ctx))));
+        auto ctx = std::make_unique<LLVMContext>();
+        auto mod = parseBitcodeFile(
+            MemoryBufferRef(f.from.bitcode, f.from.name), *ctx);
+        if (!mod) return report(f, toString(mod.takeError()));
+        std::string().swap(f.from.bitcode);
+        optimize_module(**mod, f.from.opt_level, &closed_);
+        if (closed_) return cancelled(f);
+        if (auto object = keyed_object(**mod, source_key, false))
+          err = jit_.addObjectFile(std::move(object));
+        else
+          err = jit_.addIRModule(orc::ThreadSafeModule(
+              std::move(*mod), orc::ThreadSafeContext(std::move(ctx))));
       }
       if (err) return report(f, toString(std::move(err)));
       auto code = jit_.lookup(f.from.name + ".opt");
@@ -6267,12 +6249,7 @@ struct JIT {
       std::atomic_ref<void*>(*f.code).store(code->toPtr<void*>(),
                                             std::memory_order_release);
       os_release_free_heap();
-      if (time_passes())
-        std::fprintf(
-            stderr, "[jit-time] reopt    %8.1f ms  %s\n",
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - t0).count(),
-            f.from.name.c_str());
+      time_phase("reopt", t0, f.from.name);
     }
 
     static void cancelled(const Fn& f) {
@@ -6292,8 +6269,8 @@ struct JIT {
     std::mutex mu_;
     std::condition_variable ready_;
     std::deque<size_t> queue_;
-    bool closed_ = false;
-    std::atomic<bool> cancel_ = false;
+    // Set under mu_; read by the pipeline's pass gate without it.
+    std::atomic<bool> closed_ = false;
     std::thread worker_;
     std::once_flag joined_;
   };

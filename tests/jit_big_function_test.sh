@@ -100,51 +100,45 @@ done
 # runs (JIT::Reoptimizer). `wait` compiles it on the call that reaches the
 # count, so from the second call on test_jit_big_function.cul runs the
 # optimized code, throws and drops included, and its asserts still hold.
-reopt() { # <mode> [<cache>]: the run's stderr
-  CULEBRA_JIT_CACHE="${2:-off}" CULEBRA_JIT_TIME_PASSES=1 \
-    CULEBRA_JIT_REOPTIMIZE="$1" CULEBRA_JIT_REOPTIMIZE_CALLS=1 "$CULEBRA" \
-    --jit "$HERE/test_jit_big_function.cul" 2>&1 > /dev/null
+reopt() { # <mode> <cache> <program>: the run's stderr
+  CULEBRA_JIT_CACHE="$2" CULEBRA_JIT_TIME_PASSES=1 CULEBRA_JIT_REOPTIMIZE="$1" \
+    CULEBRA_JIT_REOPTIMIZE_CALLS=1 "$CULEBRA" --jit "$3" 2>&1 > /dev/null
 }
+expect_reopt() { # <what> <exit> <line>: of the run in $out and $rc
+  if (( rc != $2 )) || ! grep -q "$3" <<< "$out" ||
+    grep -q 'could not optimize' <<< "$out"; then
+    echo "FAIL: $1 (exit $rc, expected $2):"
+    grep -v '^ ' <<< "$out" | grep -E 'reopt|culebra:|Error' | head -5
+    fail=1
+  fi
+}
+big="$HERE/test_jit_big_function.cul"
 # A source-key hit of the object cache links an earlier run's object, and
 # optimizes again from the snapshots that run kept beside it.
 mkdir "$TMP/cache"
-for run in plain cached-miss cached-hit; do
-  case $run in
-    plain) out=$(reopt wait) ;;
-    *) out=$(reopt wait "$TMP/cache") ;;
-  esac
+for run in miss hit; do
+  out=$(reopt wait "$TMP/cache" "$big")
   rc=$?
   for n in $names; do
-    if (( rc != 0 )) || ! grep -q "^\[jit-time\] reopt .* $n\$" <<< "$out" ||
-      grep -q 'could not optimize' <<< "$out"; then
-      echo "FAIL: $n (past $LIMIT blocks) was not optimized again under" \
-        "CULEBRA_JIT_REOPTIMIZE=wait, $run (exit $rc):"
-      grep -v '^ ' <<< "$out" | grep -E 'reopt|culebra:|FAIL|Error' | head -5
-      fail=1
-    fi
+    expect_reopt "$n optimized again under wait, cache $run" 0 \
+      "^\[jit-time\] reopt .* $n\$"
   done
 done
-if reopt off | grep -q '^\[jit-time\] reopt '; then
+if reopt off "$TMP/cache" "$big" | grep -q '^\[jit-time\] reopt '; then
   echo "FAIL: CULEBRA_JIT_REOPTIMIZE=off optimized a function again"
   fail=1
 fi
 # The default compiles on a thread of its own while the program goes on. A
 # run that ends first, by returning or by Sys.exit (which does not unwind),
 # stops it: what is under way finishes or is cancelled, and says which.
-cp "$HERE/test_jit_big_function.cul" "$TMP/exits.cul"
+out=$(reopt "" "$TMP/cache" "$big")
+rc=$?
+expect_reopt "the default, the program returning" 0 '^\[jit-time\] reopt '
+cp "$big" "$TMP/exits.cul"
 echo 'Sys.exit(3)' >> "$TMP/exits.cul"
-for prog in "$HERE/test_jit_big_function.cul:0" "$TMP/exits.cul:3"; do
-  out=$(CULEBRA_JIT_CACHE=off CULEBRA_JIT_TIME_PASSES=1 \
-    CULEBRA_JIT_REOPTIMIZE_CALLS=1 "$CULEBRA" --jit "${prog%:*}" 2>&1 > /dev/null)
-  rc=$?
-  if (( rc != ${prog##*:} )) || ! grep -q '^\[jit-time\] reopt ' <<< "$out" ||
-    grep -q 'could not optimize' <<< "$out"; then
-    echo "FAIL: $(basename "${prog%:*}") under the default" \
-      "(exit $rc, expected ${prog##*:}):"
-    grep -v '^ ' <<< "$out" | grep -E 'reopt|culebra:|Error' | head -5
-    fail=1
-  fi
-done
+out=$(reopt "" off "$TMP/exits.cul")
+rc=$?
+expect_reopt "the default, the program calling Sys.exit" 3 '^\[jit-time\] reopt '
 
 # Past the cut a cleanup pad's release is the helper call alone
 # (settle_pad_release_tests): each inline tag test the lowering marked as a

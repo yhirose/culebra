@@ -1829,7 +1829,7 @@ cacheのヒットは`cached`と報告される — ソースキーが答えた�
 （CorrelatedValuePropagation、InstCombine、coalescer、greedyのレジスタ
 割り当て、control-flow optimizer）は関数の大きさより速く重くなる。
 13,500ブロックの277行の関数は13s、48,000ブロックの関数は74sかかった。
-そこで`run_program`は、パイプラインの前に`JIT::keep_big_functions_unoptimized`
+そこで`run_program`は、パイプラインの前に`JIT::cut_big_functions`
 で`kMaxOptimizedBlocks`（4096）を超える関数を`optnone` + `noinline`にする。
 clang自身の関数単位の`-O0`と同じ形で、IRのパスは`OptNoneInstrumentation`
 （`optimize_module`はそのためにこれを登録する）を通してその関数を飛ばし、
@@ -1866,7 +1866,8 @@ Reoptimizerは写しをプログラムと同じ最適化レベルで同じLLJIT�
 そのまま最後まで走る。オブジェクトのキャッシュは、写しを、それを取った
 実行のオブジェクトの横に置く。source keyが当たったときは、自分で降ろした
 モジュールを捨ててそのオブジェクトをリンクするので、そのオブジェクトと
-名前の合う写しから最適化し直す。IRは設定に依らないので、キャッシュしたオブジェクトは
+名前の合う写しから最適化し直す。写しから作ったオブジェクトも、写しを
+ソースの代わりにして、プログラムと同じ2つの鍵でキャッシュする。IRは設定に依らないので、キャッシュしたオブジェクトは
 どの設定にも使える。
 `CULEBRA_JIT_REOPTIMIZE_CALLS`が回数（100）、`CULEBRA_JIT_REOPTIMIZE`が
 コンパイルを走らせる場所である。既定では専用のスレッドで走り、その間も

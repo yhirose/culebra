@@ -107,7 +107,7 @@ struct Lowering {
       if (opt_level > 0) {
         // Here alone: the baked preamble and `culebra build` pay their
         // compile once, at build, and run many times.
-        reoptimizable = JIT::keep_big_functions_unoptimized(*mod, opt_level);
+        reoptimizable = JIT::cut_big_functions(*mod, opt_level);
         JIT::time_phase("cut", phase_t);
         JIT::optimize_module(*mod, opt_level);
       }

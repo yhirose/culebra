@@ -1956,7 +1956,7 @@ both sides of the pipeline — CorrelatedValuePropagation, InstCombine, the
 coalescer, the greedy allocator, the control-flow optimizer — grow faster
 than the function does: a 277-line function of 13,500 blocks took 13 s,
 and one of 48,000 blocks 74 s. So before the pipeline, `run_program`
-has `JIT::keep_big_functions_unoptimized` mark a function past
+has `JIT::cut_big_functions` mark a function past
 `kMaxOptimizedBlocks` (4096) `optnone` + `noinline`, clang's own
 per-function `-O0`: the IR passes skip it through
 `OptNoneInstrumentation`, which `optimize_module` registers for that
@@ -1995,7 +1995,9 @@ the same LLJIT and stores the code in `<f>.code`; frames already in the
 -O0 code finish there. The object cache keeps the snapshots beside the
 object of the run that took them, so a source-key hit, which links that
 object and drops the module it lowered, optimizes again from the
-snapshots whose names are the object's. The IR does not depend on the
+snapshots whose names are the object's. The object a snapshot compiles to
+is cached under the same two keys as the program's, the snapshot standing
+for the source. The IR does not depend on the
 settings, so a cached object serves any of them:
 `CULEBRA_JIT_REOPTIMIZE_CALLS` is the count (100), and
 `CULEBRA_JIT_REOPTIMIZE` where the compile runs. By default it runs on a
