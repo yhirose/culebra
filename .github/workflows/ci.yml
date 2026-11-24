@@ -1866,6 +1866,33 @@ jobs:
           timeout 60 ./build-win-jit/culebra.exe --jit jit_eh.cul \
             && echo "JIT_EH_PASS" || echo "JIT_EH_FAIL rc=$?"
 
+      # A function past the JIT's block cut, optimized again while it runs: a
+      # second object reaching the program's own symbols through RTDyld
+      # (dllimport for data). The one place Windows runs it, so it fails the job.
+      - name: JIT — a long function optimized again
+        run: |
+          export CULEBRA_JIT_TIME_PASSES=1 CULEBRA_JIT_REOPTIMIZE_CALLS=1
+          rc=0
+          CULEBRA_JIT_REOPTIMIZE=wait timeout 300 ./build-win-jit/culebra.exe \
+            --jit tests/test_jit_big_function.cul 2> reopt.err || rc=$?
+          grep -E '^\[jit-time\] reopt|culebra:' reopt.err || true
+          if (( rc != 0 )) || ! grep -q '^\[jit-time\] reopt .* ms ' reopt.err; then
+            echo "JIT_REOPT_FAIL rc=$rc"
+            exit 1
+          fi
+          # The default compiles on its own thread; Sys.exit stops it.
+          cp tests/test_jit_big_function.cul exits.cul
+          echo 'Sys.exit(3)' >> exits.cul
+          rc=0
+          timeout 300 ./build-win-jit/culebra.exe --jit exits.cul 2> exits.err \
+            || rc=$?
+          grep -E '^\[jit-time\] reopt|culebra:' exits.err || true
+          if (( rc != 3 )) || ! grep -q '^\[jit-time\] reopt ' exits.err; then
+            echo "JIT_REOPT_EXIT_FAIL rc=$rc"
+            exit 1
+          fi
+          echo "JIT_REOPT_PASS"
+
       # The width gate (see the job comment above): its own configure, in the
       # same runner, so it shares the msys2 toolchain install above instead of
       # paying for a second Windows VM.
