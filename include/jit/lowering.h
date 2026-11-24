@@ -341,6 +341,11 @@ struct Lowering {
       const Chunk& ch = p.chunks[i];
       if (!ch.is_generator) {
         lower_chunk(j, p, i, fns, metas, optimized);
+        // A generator's body is entered again at each resume, so it keeps
+        // the code it started with.
+        if (i > 0)
+          fns[i]->setMetadata(JIT::kReoptimizable,
+                              llvm::MDNode::get(j.ctx_, {}));
         continue;
       }
       auto& b = j.builder_;

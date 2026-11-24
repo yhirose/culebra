@@ -1428,6 +1428,7 @@ struct JIT {
   static constexpr size_t kMaxOptimizedBlocks = 4096;
 
   static void keep_big_functions_unoptimized(llvm::Module& mod) {
+    std::vector<llvm::Function*> past_cut;
     for (auto& f : mod) {
       if (f.isDeclaration() || f.size() <= kMaxOptimizedBlocks) continue;
       // The function is counted as it was without its Float copies, and keeps
@@ -1441,7 +1442,43 @@ struct JIT {
       f.addFnAttr(llvm::Attribute::OptimizeNone);
       f.addFnAttr(llvm::Attribute::NoInline);
       settle_pad_release_tests(f, /*keep_test=*/false);
+      past_cut.push_back(&f);
     }
+    for (auto* f : past_cut)
+      if (f->getMetadata(kReoptimizable)) reach_through_code_pointer(*f);
+  }
+
+  // Marks a function whose code may be replaced while the program runs
+  // (Lowering::lower_program: a function chunk's JitFn). Past the cut it is
+  // reached through reach_through_code_pointer; the pipeline drops the rest.
+  static constexpr const char* kReoptimizable = "culebra.reoptimizable";
+
+  // Every use of `f` — a direct call, the code a closure carries, its own
+  // recursion — moves to `<f>.entry`, which jumps to the code `<f>.code`
+  // points at, `f` until something else is stored there. The pointer is
+  // external so that the pipeline, which sees no store to it, cannot fold it.
+  static void reach_through_code_pointer(llvm::Function& f) {
+    using namespace llvm;
+    f.setMetadata(kReoptimizable, nullptr);
+    auto& mod = *f.getParent();
+    auto* ptrTy = PointerType::get(mod.getContext(), 0);
+    const std::string name = f.getName().str();
+    auto* entry = Function::Create(f.getFunctionType(),
+                                   GlobalValue::InternalLinkage,
+                                   name + ".entry", mod);
+    f.replaceAllUsesWith(entry);
+    auto* code = new GlobalVariable(mod, ptrTy, /*isConstant=*/false,
+                                    GlobalValue::ExternalLinkage, &f,
+                                    name + ".code");
+    IRBuilder<> b(BasicBlock::Create(mod.getContext(), "entry", entry));
+    auto* target = b.CreateAlignedLoad(
+        ptrTy, code, mod.getDataLayout().getPointerABIAlignment(0), "code");
+    target->setAtomic(AtomicOrdering::Acquire);
+    std::vector<Value*> args;
+    for (auto& a : entry->args()) args.push_back(&a);
+    b.CreateCall(f.getFunctionType(), target, args)
+        ->setTailCallKind(CallInst::TCK_MustTail);
+    b.CreateRetVoid();
   }
 
   // Marks the inline tag test of a release emitted inside a cleanup pad
@@ -1543,6 +1580,7 @@ struct JIT {
     for (auto& f : mod) {
       settle_pad_release_tests(f, /*keep_test=*/true);
       drop_arith_marks(f);
+      f.setMetadata(kReoptimizable, nullptr);
     }
     PassInstrumentationCallbacks PIC;
     // The new pass manager skips an `optnone` function only through this

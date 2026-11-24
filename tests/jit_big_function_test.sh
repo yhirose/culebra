@@ -72,6 +72,19 @@ for n in $names; do
   fi
 done
 
+# Past the cut a function is reached through its code pointer alone
+# (JIT::reach_through_code_pointer), so its code can be replaced while the
+# program runs: the pointer's initializer is the one reference left to it.
+for n in $names; do
+  refs=$(grep -E "@$n([^.A-Za-z0-9_]|\$)" "$TMP/opt.ll" | grep -v '^define ')
+  only_init="^@$n[.]code = [a-z_ ]*global ptr @$n\$"
+  if [[ ! "$refs" =~ $only_init ]]; then
+    echo "FAIL: $n (past $LIMIT blocks) is reached other than through" \
+      "@$n.code: $refs"
+    fail=1
+  fi
+done
+
 # Past the cut a cleanup pad's release is the helper call alone
 # (settle_pad_release_tests): each inline tag test the lowering marked as a
 # pad's (-O0 prints the marks) takes its `rc.release` block with it, and no
