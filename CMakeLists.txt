@@ -2106,8 +2106,8 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
 
   # Shared raylib headers + link (built once, used by both bindings). The SDL
   # headers come from the submodule's own include/ (self-contained, no build
-  # step) so the Canvas binding can reach past raylib's API to SDL — see
-  # stop_text_input() in culebra_rt_canvas.cc.
+  # step) so the bindings can reach past raylib's API to SDL — see
+  # include/stdlib/os_window.h.
   target_include_directories(culebra PRIVATE ./vendor/raylib/src ./vendor/SDL/include)
   foreach(_dep sdl_ext raylib_ext)
     if(TARGET ${_dep})

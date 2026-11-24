@@ -93,28 +93,16 @@ int pick_scale(int w, int h) {
   return std::max(1, 640 / longest);
 }
 
-// raylib's SDL backend turns text input on for every window it opens, which
-// makes the window an active text-input client. Canvas polls key state and
-// never consumes text, and being a text client is what routes a held key
-// through the platform's compose/IME machinery: macOS pops up its
-// press-and-hold accent picker, and a CJK input method would open its
-// candidate window over the game. Turn it back off — raylib exposes no API
-// for this, so it goes through SDL directly (raylib is built on the same
-// vendored static SDL3 this links). os_window::the() finds the window without
-// asking which has focus, which it may not have yet at creation.
-void stop_text_input() {
-  if (SDL_Window* w = os_window::the()) SDL_StopTextInput(w);
-}
-
-// char_pop() (Canvas.typed) needs those same text-input events, so the first
-// call turns text input back on — a program that reads typed characters opts
-// into the platform's text machinery, and one that only polls keys never sees
-// an IME popup. Latched: the flip happens once.
+// char_pop() (Canvas.typed) needs the text-input events ensure_window() turns
+// off (os_window::stop_text_input), so the first call turns them back on — a
+// program that reads typed characters opts into the platform's text machinery,
+// and one that only polls keys never sees an IME popup. Latched: the flip
+// happens once.
 bool g_text_input_on = false;
 void start_text_input() {
   if (g_text_input_on) return;
   g_text_input_on = true;
-  if (SDL_Window* w = os_window::the()) SDL_StartTextInput(w);
+  os_window::start_text_input();
 }
 
 // Forced-headless mode for the windowed build: with CULEBRA_CANVAS_HEADLESS set
@@ -268,7 +256,7 @@ void ensure_window() {
           "CULEBRA_CANVAS_HEADLESS=1 to run without one";
       return;
     }
-    stop_text_input();
+    os_window::stop_text_input();
     SetTargetFPS(60);  // pin the game clock to 60 fps like the browser loop
     // raylib's own default: Esc alone force-closes the window with no
     // chance for a script to intercept it (closing() would report it exactly

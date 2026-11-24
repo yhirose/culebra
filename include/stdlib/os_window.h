@@ -11,6 +11,7 @@
 // macOS), not the SDL_Window*, so the window comes from SDL's own list.
 #pragma once
 
+#include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_video.h>
 
 namespace culebra::os_window {
@@ -37,6 +38,19 @@ inline void set_fullscreen(bool on, SDL_Window* w = the()) {
   if (w == nullptr || on == fullscreen(w)) return;
   SDL_SetWindowFullscreen(w, on);
   SDL_SyncWindow(w);
+}
+
+// raylib's SDL backend starts text input on every window it opens, which
+// routes a held key through the platform's compose/IME (macOS's press-and-hold
+// accent picker, a CJK candidate window). A binding that only polls keys turns
+// it off after InitWindow, and one that reads typed text turns it back on when
+// asked; the() needs no focus, which the window may not have yet.
+inline void stop_text_input(SDL_Window* w = the()) {
+  if (w != nullptr) SDL_StopTextInput(w);
+}
+
+inline void start_text_input(SDL_Window* w = the()) {
+  if (w != nullptr) SDL_StartTextInput(w);
 }
 
 }  // namespace culebra::os_window

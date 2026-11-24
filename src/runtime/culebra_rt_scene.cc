@@ -1698,6 +1698,7 @@ class View {
     if (!IsWindowReady())
       throw std::runtime_error(
           "Scene: cannot open a window (no usable display/GL)");
+    culebra::os_window::stop_text_input();  // keys are polled, never typed
     ++gl_epoch();   // a fresh context: nothing an earlier View uploaded survives
     // raylib's own default: Esc alone force-closes the window, one frame too
     // late for a script to ask "are you sure?" — a pause menu cannot exist.
