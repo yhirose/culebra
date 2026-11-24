@@ -20,7 +20,8 @@ emit() { CULEBRA_JIT_CACHE=off "$CULEBRA" --jit "$@" --emit-llvm "$TMP/p.cul" 2>
 # and <stem>.counts each function's lowered blocks, by name.
 compile() { # <file> <-O level> <stem>
   CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit "$2" \
-    --emit-llvm "$1" > "$TMP/$3.ll" 2> "$TMP/$3.stats"
+    --emit-llvm "$1" > "$TMP/$3.ll" 2> "$TMP/$3.stats" ||
+    { echo "FAIL: --jit $2 --emit-llvm ${1##*/} exited $?"; fail=1; }
   awk '/^\[jit-blocks\] [^ ]+ .*: [0-9]+ blocks/ { for (i = 1; i <= NF; i++)
     if ($i == "blocks,") print $2, $(i - 1) }' "$TMP/$3.stats" |
     sort > "$TMP/$3.counts"

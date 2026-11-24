@@ -1961,7 +1961,9 @@ has `JIT::cut_big_functions` mark a function past
 per-function `-O0`: the IR passes skip it through
 `OptNoneInstrumentation`, which `optimize_module` registers for that
 reason, and the backend gives it FastISel and the fast allocator. The
-rest of the module is optimized as before. The 277-line function starts
+rest of the module is optimized as before. The count is of the blocks
+that can run: those nothing reaches, such as code the lowering emits
+after a `return`, are removed first. The 277-line function starts
 in 2.5 s and runs about 40% slower than at `-O2`. Float arithmetic loses
 more, as past the cut it also goes without the arith runs' copies (below):
 the flight model's contact routine, 5,379 blocks, takes 4.6 µs a call
@@ -2147,9 +2149,9 @@ that its blocks and landing pads come out exactly where they would
 without the copy. Only a pipeline folds the second copy, so a lowering
 without one (`-O0`, `--jit-faststart`) makes none
 (`lower_program`'s `optimized`). The block cut counts a function without
-its copies (`JIT::arith_versions`), so it sees the function as before: under
-the cut the function keeps them, and past it they are taken back out
-(`JIT::drop_float_copies`). Twenty Float operators per call
+its copies (`JIT::arith_versions`), so the copies alone never take a
+function past it: under the cut the function keeps them, and past it they
+are taken back out (`JIT::drop_float_copies`). Twenty Float operators per call
 went from 42.7 to 16.0 ns on fields and from 36.8 to 13.8 ns on untyped
 parameters (x86-64, `just build`); the flight model's step went from 2.86
 to 2.04 µs in the air and from 8.12 to 6.91 µs on the ground, where its

@@ -1526,8 +1526,11 @@ struct JIT {
     llvm::SmallPtrSet<const llvm::Function*, 8> past_cut;
     for (auto& f : mod) {
       if (f.isDeclaration() || f.size() <= kMaxOptimizedBlocks) continue;
-      // The function is counted as it was without its Float copies, and keeps
-      // them under the cut. Past it they go: only a pipeline folds them.
+      // The cut counts the code that can run: the blocks nothing reaches (code
+      // the lowering emits after a `return`) go first, so every guard is live.
+      llvm::EliminateUnreachableBlocks(f);
+      // The function is counted without its Float copies, and keeps them under
+      // the cut. Past it they go: only a pipeline folds them.
       auto versions = arith_versions(f);
       const size_t unversioned = versions.unversioned_size(f);
       if (unversioned <= kMaxOptimizedBlocks) continue;
@@ -1763,8 +1766,8 @@ struct JIT {
 
   // A function's arith runs, read off the marks without changing anything:
   // each guard, each join a plain copy ends in, and the Float copies' blocks.
-  // A Float copy is exactly what a guard alone reaches, so reachability finds
-  // it and no other unreachable block (a dead tail) is touched.
+  // In a function whose every block is reachable, a Float copy is exactly what
+  // the plain code does not reach when the guards' Float edges are closed.
   struct ArithVersions {
     std::vector<llvm::BranchInst*> guards;
     std::vector<llvm::BasicBlock*> joins;
@@ -1786,16 +1789,20 @@ struct JIT {
       else v.joins.push_back(t->getSuccessor(0));
     }
     if (v.guards.empty()) return v;
-    // Walk the plain code with each copy's head taken as seen, then each copy
-    // from its head: what that walk adds is the copy.
-    llvm::df_iterator_default_set<llvm::BasicBlock*> seen;
-    for (auto* g : v.guards) seen.insert(g->getSuccessor(0));
-    for (auto* bb : llvm::depth_first_ext(&f.getEntryBlock(), seen)) (void)bb;
-    for (auto* g : v.guards) {
-      seen.erase(g->getSuccessor(0));
-      for (auto* bb : llvm::depth_first_ext(g->getSuccessor(0), seen))
-        v.fast.push_back(bb);
-    }
+    // Walk the plain code with each copy's head taken as seen: every block
+    // the walk does not reach is a copy's.
+    llvm::df_iterator_default_set<llvm::BasicBlock*> plain;
+    for (auto* g : v.guards) plain.insert(g->getSuccessor(0));
+    for (auto* bb : llvm::depth_first_ext(&f.getEntryBlock(), plain)) (void)bb;
+    for (auto* g : v.guards) plain.erase(g->getSuccessor(0));
+    // A guard or join off the plain code would go with the copies, and
+    // drop_float_copies would then use a deleted block.
+    assert(llvm::all_of(v.guards, [&](auto* g) {
+      return plain.contains(g->getParent());
+    }));
+    assert(llvm::all_of(v.joins, [&](auto* j) { return plain.contains(j); }));
+    for (auto& bb : f)
+      if (!plain.contains(&bb)) v.fast.push_back(&bb);
     return v;
   }
 

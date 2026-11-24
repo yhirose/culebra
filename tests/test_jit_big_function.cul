@@ -61,7 +61,11 @@ fn big(xs, k) {
   acc = acc + (v12 % 2 == 0 ? v12 / 2 : v12 * 3 + 1) % 1000
   let v13 = xs[5] > 13 ? xs[5] * 14 + acc % 7 : xs[6] - 13 + (acc > 100 ? 1 : 2)
   acc = acc + (v13 % 2 == 0 ? v13 / 2 : v13 * 3 + 1) % 1000
-  [tag, acc, xs.size()]
+  return [tag, acc, xs.size()]
+  # Dead code the lowering still emits, with an arith run in it: the cut
+  # takes it out before counting.
+  let dead = acc * 2.5 + acc * 3.5 - acc
+  [tag, dead, 0]
 }
 
 let xs = [3, 14, 15, 92, 65, 35, 89, 79]
