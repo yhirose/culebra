@@ -910,6 +910,14 @@ another name. The CLI and an AOT binary call
 `culebra::install_utf8_locale()` at startup (Windows 10 1803 and later; a
 no-op elsewhere); a host that runs scripts touching such paths calls it too.
 
+So is the way the process ends. A script's `Sys.exit` ends the host: it
+puts away what the scripts left open (the terminal's raw mode, a window, an
+audio device), flushes the standard streams and calls `std::_Exit`, so the
+host's own `atexit` handlers and static destructors do not run, and another
+thread still running a script is not torn down under. A host that ends the
+process itself calls `culebra::run_exit_hooks()` first, as the CLI does at
+the end of `main`.
+
 ### Defining host functions
 
 `Embed::define` registers a C++ callable as a script-visible function.

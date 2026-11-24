@@ -11,6 +11,8 @@
 // Underscore-prefixed `_Term` marks these as the wrapper's ABI, not a stable
 // surface for direct use.
 
+#include <base/exit_hooks.h>
+
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
@@ -151,9 +153,9 @@ inline bool take_resize() {
   return false;
 }
 
-// Restore cooked mode. Registered with atexit on first raw_on so an abnormal
-// exit (uncaught error, signal that bypasses culebra's scope unwinding) does
-// not leave the user's terminal wedged in raw mode.
+// Restore cooked mode. Armed as an exit hook on first raw_on, so a program
+// that ends in raw mode (an uncaught error, Sys.exit) does not leave the
+// user's terminal wedged in it.
 inline void raw_off() {
   if (!_raw_active()) return;
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &_saved_termios());
@@ -169,11 +171,7 @@ inline void raw_on() {
   if (_raw_active()) return;
   if (!isatty(STDIN_FILENO)) return;
   if (tcgetattr(STDIN_FILENO, &_saved_termios()) != 0) return;
-  static bool atexit_registered = false;
-  if (!atexit_registered) {
-    std::atexit(raw_off);
-    atexit_registered = true;
-  }
+  arm_exit_hook(raw_off);
   struct termios raw = _saved_termios();
   raw.c_lflag &= ~(ECHO | ICANON | ISIG | IEXTEN);
   raw.c_iflag &= ~(IXON | ICRNL | BRKINT | INPCK | ISTRIP);
@@ -319,11 +317,7 @@ inline void raw_on() {
   bool have_out = hout != INVALID_HANDLE_VALUE && GetConsoleMode(hout, &out_mode);
   _saved_out_mode() = out_mode;
 
-  static bool atexit_registered = false;
-  if (!atexit_registered) {
-    std::atexit(raw_off);
-    atexit_registered = true;
-  }
+  arm_exit_hook(raw_off);
   // Raw input built from scratch: only VT input (no line/echo/processed/mouse/
   // window events), so ReadFile returns keypress bytes and nothing spurious
   // wakes the wait in read_key.

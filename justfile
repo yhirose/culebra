@@ -320,6 +320,14 @@ check-borrowed-closure-door:
 check-gc-pin-door:
     tools/checks/check_gc_pin_door.sh
 
+# What the process puts away before it ends is an exit hook (base/exit_hooks.h),
+# run while every static is alive. Sys.exit ends with _Exit, past any
+# std::atexit handler, and elsewhere one runs among the statics' destructors.
+[group("test")]
+[doc("Verify nothing registers a std::atexit handler (exit hooks instead)")]
+check-exit-hook-door:
+    tools/checks/check_exit_hook_door.sh
+
 [group("test")]
 [doc("Verify no borrowed value is held across a call into program code (clang analysis)")]
 check-gc-hazard:
@@ -418,7 +426,7 @@ check-docs-cpp:
 # well under a second once the grammar-blob tool and the Audio.Graph bench are
 # ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-gc-pin-door check-value-equal-door check-value-order-door check-key-name-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-gc-pin-door check-exit-hook-door check-value-equal-door check-value-order-door check-key-name-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
 
 # The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D, audio,
 # Webview or Llama), built as a release is (-O3, LTO). Its own dir: the JIT
@@ -1172,6 +1180,7 @@ _run-tests BACKEND:
         # The sweep above runs every binary with no arguments, so this is the
         # one place an AOT build is asked what it does with some.
         closes_ok sys_argv_test {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot
+        closes_ok sys_exit_test {{nice_cmd}} bash tests/sys_exit_test.sh "$BIN" --aot
         # A child's "inherit" streams in a binary, as the executor and JIT
         # lanes of the same script see them.
         closes_ok proc_stdio_test {{nice_cmd}} bash tests/proc_stdio_test.sh "$BIN" --aot

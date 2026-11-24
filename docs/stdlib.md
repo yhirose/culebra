@@ -1391,7 +1391,9 @@ which reads the arguments it was handed.
 ### `Sys.exit(code: Long) -> Nil`
 
 Terminate the process immediately with the given exit code. Does
-not return; pending `defer` statements are *not* run.
+not return; pending `defer` statements are *not* run, and other
+isolates stop where they are. Called from several isolates at once, it
+ends the process once, with one of their codes.
 
 ```culebra
 # doctest: skip

@@ -2007,7 +2007,7 @@ thread of its own while the program goes on; `wait` runs it on the
 thread whose call reached the count, so the next call is optimized,
 which is what a benchmark and a test want; `off` never runs it. A run
 that ends first, by returning or by `Sys.exit` (which does not unwind,
-so an atexit handler stops the compile), drops what is queued and
+so a hook it runs first stops the compile), drops what is queued and
 cancels the compile under way, skipping every optional pass left; a
 backend already begun runs to its end. A function past
 `kMaxReoptimizedBlocks` (16,384) stays at -O0. A generator body,

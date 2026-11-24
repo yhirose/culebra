@@ -12,6 +12,7 @@
 // takes g_music_mutex around every Music call, and a capture device's thread,
 // which only fills that capture's ring (culebra_raudio.c).
 
+#include "base/exit_hooks.h"
 #include "stdlib/audio.h"
 #include "stdlib/audio_engine.h"
 
@@ -59,7 +60,7 @@ bool audio_off() {
 bool g_ready = false;
 bool g_failed = false;  // latch: don't retry InitAudioDevice every call
 
-void arm_exit_teardown();
+void exit_teardown();
 
 void ensure_device() {
   if (g_ready || g_failed || audio_off()) return;
@@ -72,7 +73,7 @@ void ensure_device() {
     return;
   }
   g_ready = true;
-  arm_exit_teardown();
+  arm_exit_hook(exit_teardown);
 }
 
 // The capture context, apart from the device above so a program that only
@@ -87,7 +88,7 @@ bool ensure_capture() {
     return false;
   }
   g_capture_ready = true;
-  arm_exit_teardown();
+  arm_exit_hook(exit_teardown);
   return true;
 }
 
@@ -295,11 +296,12 @@ std::unordered_map<int64_t, Capture> g_captures;
 
 // --- exit ------------------------------------------------------------------
 
-// Hand the device back at process exit, after everything that plays through
-// it: the feeder stops and joins first, then tracks, sounds and streams go,
-// then the captures and their context, then the tone stream and the device.
-// Each step clears what guards it, so the owning statics find nothing left
-// when their own destructors run.
+// Hand the device back before the process ends (base/exit_hooks.h; the
+// device and the capture context each arm it), after everything that plays
+// through it: the feeder stops and joins first, then tracks, sounds and
+// streams go, then the captures and their context, then the tone stream and
+// the device. Each step clears what guards it, so the owning statics find
+// nothing left when their own destructors run.
 void exit_teardown() {
   if (g_feeder.joinable()) {
     {
@@ -333,18 +335,6 @@ void exit_teardown() {
     CloseAudioDevice();
     g_ready = false;
   }
-}
-
-// Registered once the device exists rather than from a file-scope object's
-// destructor: a registration made after the audio driver was dlopen'd runs
-// before that driver tears itself down (culebra_rt_canvas.cc's
-// arm_exit_teardown has the long form). The device and the capture context
-// each arm it; the first one registers.
-void arm_exit_teardown() {
-  static bool armed = false;
-  if (armed) return;
-  armed = true;
-  std::atexit(exit_teardown);
 }
 
 }  // namespace

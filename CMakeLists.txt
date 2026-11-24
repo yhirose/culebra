@@ -1183,6 +1183,9 @@ endif()
 if(CULEBRA_COVERAGE)
   target_compile_options(culebra PRIVATE -O0 -fno-inline --coverage
                                          -fprofile-update=atomic)
+  # Sys.exit ends with _Exit, past libgcov's own exit handler, so it writes
+  # the counters first (base/exit_hooks.h).
+  target_compile_definitions(culebra PRIVATE CULEBRA_COVERAGE=1)
   target_link_options(culebra PRIVATE --coverage)
 endif()
 
@@ -2540,6 +2543,12 @@ add_test(NAME args_cli_test
 # same script again with --aot.
 add_test(NAME sys_argv_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/sys_argv_test.sh
+                 $<TARGET_FILE:culebra>)
+
+# Sys.exit from an isolate and the main thread at once: the process ends once
+# (include/base/exit_hooks.h). A .cul sweep cannot see how a process ends.
+add_test(NAME sys_exit_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/sys_exit_test.sh
                  $<TARGET_FILE:culebra>)
 
 # kauai/tools/play.cul's streams and statuses, for a song that reads, one that

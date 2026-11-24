@@ -44,6 +44,7 @@
 
 #include <base/format.h>
 #include <base/scalar_bytes.h>  // the fixed-width scalars' byte kinds
+#include <base/exit_hooks.h>  // arm_exit_hook (install_console_utf8)
 
 #include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
 
@@ -3004,7 +3005,7 @@ inline void install_utf8_locale() {
 // CLI-only, like install_sigint_handler: embedders own their console.
 inline void install_console_utf8() {
 #if defined(_WIN32)
-  static UINT saved_out, saved_in;  // static: the atexit lambda cannot capture
+  static UINT saved_out, saved_in;  // static: the exit hook cannot capture
   UINT out = GetConsoleOutputCP();
   if (out == 0) return;  // no console attached (redirected output)
   UINT in = GetConsoleCP();
@@ -3013,7 +3014,7 @@ inline void install_console_utf8() {
   SetConsoleCP(CP_UTF8);
   saved_out = out;
   saved_in = in;
-  std::atexit([] {
+  arm_exit_hook([] {
     SetConsoleOutputCP(saved_out);
     SetConsoleCP(saved_in);
   });

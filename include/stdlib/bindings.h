@@ -46,6 +46,7 @@
 #include <base/shared.h>
 #include <base/scalar_bytes.h>  // String.pack/unpack, Math.f32's rounding
 #include <base/stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
+#include <base/exit_hooks.h>  // end_process (Sys.exit)
 #include <stdlib/fst.h>    // the value-neutral FST choke
 #include <stdlib/search.h>  // the value-neutral Search choke (the Search AOT axis)
 #include <stdlib/search_model.h>  // the models Search.segmenter knows by name
@@ -1538,7 +1539,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_start_of_nanos(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_exit(int64_t code) {
-  std::exit(static_cast<int>(code));
+  culebra::end_process(static_cast<int>(code));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_sys_env(

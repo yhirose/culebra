@@ -357,6 +357,16 @@ inline _FileTable& _file_table() {
   return runtime_substate<_FileTable>(kSlotFileTable);
 }
 
+// Sys.exit ends the process without destroying the ending thread's Runtime,
+// whose table flushed what its files had buffered, so File.open arms this as
+// an exit hook (base/exit_hooks.h).
+inline void _file_flush_all() {
+  auto* t = static_cast<_FileTable*>(current_runtime().substate[kSlotFileTable]);
+  if (!t) return;
+  for (auto& [id, f] : t->entries)
+    if (f.writable) f.fs().flush();
+}
+
 [[noreturn]] inline void _file_throw(const std::string& what, int64_t line,
                                      int64_t col, std::string_view kind = "IOError") {
   throw CulebraError(std::string(kind), what, line, col);
@@ -383,6 +393,7 @@ inline int64_t _file_open(const std::string& path, const std::string& mode,
                                 mode),
                 line, col);
   }
+  arm_exit_hook(_file_flush_all);
   auto& tbl = _file_table();
   int64_t id = tbl.next_id++;
   auto& slot = tbl.entries[id];

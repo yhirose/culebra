@@ -1351,7 +1351,9 @@ inspect(Sys.argv)  # ['hello', 'world']
 ### `Sys.exit(code: Long) -> Nil`
 
 指定の終了コードでプロセスを即座に終了します。呼び出しは戻らず、
-保留中の`defer`文も**実行されません**。
+保留中の`defer`文も**実行されません**。ほかのisolateはその場で止まります。
+複数のisolateから同時に呼んでもプロセスは1度だけ終わり、終了コードは
+そのうちのどれか1つになります。
 
 ```culebra
 # doctest: skip

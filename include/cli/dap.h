@@ -522,8 +522,7 @@ class DapServer {
     // Flush + close the debuggee's stdout/stderr so the capture reader drains
     // all output (then EOFs), and join it BEFORE terminating — guaranteeing
     // every `output` event precedes `terminated`.
-    std::cout.flush();
-    std::fflush(nullptr);
+    flush_own_output();
     stop_capture();
     event("exited", Obj().set("exitCode", L(code)).v());
     event("terminated", Obj().v());

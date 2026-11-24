@@ -2108,6 +2108,13 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_rt_bootstrap() {
   static const bool installed = [] {
     tl::install_runtime_hooks();
     if (!tensor_device_chosen) tl::use_auto();
+    // TL_PROFILE=1's table, which tensorlib prints from std::atexit: Sys.exit
+    // ends the process without running that (base/exit_hooks.h).
+    if (std::getenv("TL_PROFILE")) arm_exit_hook([] {
+      if (!tl::profile::active()) return;
+      tl::profile::stop();
+      tl::profile::report(stderr);
+    });
     return true;
   }();
   (void)installed;

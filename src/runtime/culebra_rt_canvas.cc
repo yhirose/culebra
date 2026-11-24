@@ -19,6 +19,7 @@
 #define NOUSER
 #endif
 
+#include "base/exit_hooks.h"
 #include "stdlib/canvas.h"
 #include "stdlib/keynames.h"
 #include "stdlib/os_window.h"
@@ -135,8 +136,8 @@ bool forced_headless() {
   return h;
 }
 
-// Registers the exit teardown; defined with the teardown, below the input code.
-void arm_exit_teardown();
+// Defined below the input code.
+void exit_teardown();
 
 // raylib reports a graphics device it could not create with LOG_FATAL, and its
 // default log handler exits the process — so on exactly the machines the
@@ -277,7 +278,7 @@ void ensure_window() {
     // itself instead.
     SetExitKey(KEY_NULL);
     g_window_ready = true;
-    arm_exit_teardown();
+    arm_exit_hook(exit_teardown);
     apply_window_state();
   } else {
     UnloadTexture(g_tex);
@@ -332,7 +333,8 @@ void drain_key_events() {
   }
 }
 
-// Hand the window back at process exit.
+// Hands the window back before the process ends, armed once the window
+// exists (base/exit_hooks.h).
 void exit_teardown() {
   if (g_window_ready && IsWindowReady()) {
     UnloadTexture(g_tex);
@@ -342,19 +344,6 @@ void exit_teardown() {
   }
 }
 
-// Armed once the window exists, rather than run from a file-scope object's
-// destructor. A static object registers its destructor with
-// __cxa_atexit when it is CONSTRUCTED — before main for a file-scope one — and
-// exit runs those registrations in reverse, so a file-scope closer runs last:
-// after the GL and audio drivers dlopen'd along the way have torn themselves
-// down. Calling into Mesa there segfaults, which is what every Canvas program on
-// Linux did on the way out. Registering once the resource exists nests our
-// teardown inside the lifetime of the libraries it calls into.
-//
-// Only a registration made after a driver was dlopen'd runs before that driver
-// tears itself down, so it is made where the window comes up (the Audio
-// namespace registers its own, for the same reason, when its device does).
-void arm_exit_teardown() { std::atexit(exit_teardown); }
 
 // (Re)create the screen layer's texture when its size changes, the same shape
 // ensure_window() uses for g_tex. No filter is set: this one is blitted 1:1,

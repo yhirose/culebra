@@ -25,6 +25,8 @@
 // JIT lacks between statements). Same wiring as the interruptible stdin / Http
 // paths; pulling shared.h keeps proc.h value-neutral (no Value / JitValue).
 
+#include <base/stdout_capture.h>  // flush_own_output
+
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -116,15 +118,6 @@ struct Stdio {
            err == Stream::Inherit;
   }
 };
-
-// This program's buffered output, written out before a child that writes to
-// the same streams starts, so the two land in the order they were made.
-inline void flush_own_output() {
-  std::cout.flush();
-  std::cerr.flush();
-  std::fflush(stdout);
-  std::fflush(stderr);
-}
 
 #if !defined(_WIN32)
 inline std::string signal_name(int sig) {

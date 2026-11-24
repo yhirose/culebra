@@ -11,6 +11,7 @@
                               // (tests/test_foreign.cul); registered by the
                               // TU-level variable below
 #include <cli/doctest_runner.h>
+#include <base/exit_hooks.h>  // run_exit_hooks, once main is done
 #include <base/exe_path.h>  // current_executable_path — `test --jobs` re-runs this
 #include <cli/formatter.h>
 #include <cli/init_cmd.h>
@@ -2755,13 +2756,17 @@ int main(int argc, const char** argv) {
     cerr << r.line << endl;
     return r.status;
   };
-  try {
-    return run_main(argc, argv);
-  } catch (const culebra::Interrupted& e) {
-    return exit_with(e);
-  } catch (const culebra::CulebraError& e) {
-    return exit_with(e);
-  } catch (const exception& e) {
-    return exit_with(e);
-  }
+  const int status = [&] {
+    try {
+      return run_main(argc, argv);
+    } catch (const culebra::Interrupted& e) {
+      return exit_with(e);
+    } catch (const culebra::CulebraError& e) {
+      return exit_with(e);
+    } catch (const exception& e) {
+      return exit_with(e);
+    }
+  }();
+  culebra::run_exit_hooks();
+  return status;
 }

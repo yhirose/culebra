@@ -14,6 +14,7 @@
 // the process wrote, an isolate's share of it included. The two compose —
 // output no capture claims reaches std::cout, whose buffer is the runner's.
 
+#include <cstdio>
 #include <iostream>
 #include <ostream>
 #include <sstream>
@@ -88,5 +89,15 @@ class StdoutCapture {
     return buf_.str();
   }
 };
+
+// This program's buffered output, written out where something else is about
+// to write to the same streams (a child that inherits them) or where the
+// process ends without destroying the buffers (base/exit_hooks.h).
+inline void flush_own_output() {
+  std::cout.flush();
+  std::cerr.flush();
+  std::clog.flush();
+  std::fflush(nullptr);
+}
 
 }  // namespace culebra

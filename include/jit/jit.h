@@ -10,6 +10,7 @@
 #include <frontend/module_loader.h>  // LoadedModule — the embedding entries' argument
 #include <stdlib/preamble.h>  // baked_preambles — symbols every JITDylib defines
 #include <vm/script_teardown.h>  // ScriptTeardownGuard, at the end of exec()
+#include <base/exit_hooks.h>  // arm_exit_hook (Reoptimizer)
 #include <base/os_compat.h>  // os_release_free_heap, once codegen is done
 
 #include <atomic>
@@ -6184,26 +6185,25 @@ struct JIT {
       }
     }
 
-    // Sys.exit does not unwind the run, so an atexit handler stops every live
+    // Sys.exit does not unwind the run, so an exit hook stops every live
     // Reoptimizer before LLVM's statics go, holding the list so none is freed
-    // under it; registered after the list exists, so the list outlives it.
+    // under it.
     struct Live {
       std::mutex mu;
       std::vector<Reoptimizer*> all;
     };
     static Live& live() {
       static Live l;
+      static const bool armed = (arm_exit_hook(stop_all), true);
+      (void)armed;
       return l;
+    }
+    static void stop_all() {
+      std::lock_guard lock(live().mu);
+      for (auto* r : live().all) r->stop();
     }
     static void enlist(Reoptimizer* r) {
       auto& l = live();
-      static std::once_flag registered;
-      std::call_once(registered, [] {
-        std::atexit([] {
-          std::lock_guard lock(live().mu);
-          for (auto* r : live().all) r->stop();
-        });
-      });
       std::lock_guard lock(l.mu);
       l.all.push_back(r);
     }

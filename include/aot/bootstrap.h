@@ -13,6 +13,7 @@
 
 #ifdef CULEBRA_JIT_ENABLED
 
+#include <base/exit_hooks.h>
 #include <rt/rt.h>
 
 #include <cstdio>
@@ -96,9 +97,9 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     }
     return std::nullopt;
   }();
-  if (!uncaught) return 0;
-  std::fprintf(stderr, "%s\n", uncaught->line.c_str());
-  return uncaught->status;
+  if (uncaught) std::fprintf(stderr, "%s\n", uncaught->line.c_str());
+  culebra::run_exit_hooks();
+  return uncaught ? uncaught->status : 0;
 }
 
 #endif  // CULEBRA_JIT_ENABLED
