@@ -237,13 +237,14 @@ lfo.stop()
 
 ## MIDIコントローラーで弾く
 
-キーボードやウインドコントローラーで弾く音は、入力が読むメッセージ（[`MIDI`](../stdlib.ja.md#41-midi)）で動かします。ノートオンとオフは`Voices`へ、ベンド、コントローラー（CC）、アフタータッチは`control`へ、`play`が返したハンドルで設定します。同じ名前の`control`は式全体で1つの値なので、各声のbuilderの中で作ったものも、builderの外で作った部品と同じく、1回の設定で全部の声に届きます。
+キーボードやウインドコントローラーで弾く音は、入力が読むメッセージ（[`MIDI`](../stdlib.ja.md#41-midi)）で動かします。ノートオンとオフは`Voices`へ、ベンド、コントローラー（CC）、アフタータッチは`control`へ、`play`が返したハンドルで設定します。1回の`set`で全部の声が動きます。
 
 ```culebra
 let {*} = Synth
 let bend = control("bend", 1.0)  # a ratio to each note's freq
 let vibrato = sine(5.5) * control("wheel", 0.0).lag(0.05) * 0.01
-let keys = Voices(8, |f| saw(f * bend * (1.0 + vibrato)).lowpass(2000.0) * adsr(0.01, 0.2, 0.7, 0.3) * velocity() * 0.1)
+let pitch = bend * (1.0 + vibrato)  # made once, shared by every voice
+let keys = Voices(8, |f| saw(f * pitch) * adsr(0.01, 0.2, 0.7, 0.3) * velocity() * 0.1)
 let h = play(keys, wait: false)
 println(h.ends())  # => nil
 h.stop()
@@ -256,14 +257,14 @@ for m in input.messages() {
   cond {
     m.kind == "note_on" => keys.note_on(m.note, velocity: m.velocity),
     m.kind == "note_off" => keys.note_off(m.note),
-    m.kind == "bend" => h.set("bend", 2.0 ** (m.bend * 2.0 / 12.0)),  # 2 semitones at full
-    m.kind == "cc" && m.cc == 1 => h.set("wheel", m.value),
+    m.kind == "bend" => h.set("bend", 2.0 ** (m.bend * 2.0 / 12.0)),  # a range of 2 semitones
+    m.kind == "cc" && m.cc == 1 => h.set("wheel", input.control(1)),
     _ => {},
   }
 }
 ```
 
-コントローラーの値は、幅の128分の1ずつ段になって動き、音量やカットオフでは段ごとの跳びがクリックやジッパーのような音に聞こえます。`control`の後の`.lag(t)`は、段ごとの跳びを約`t`秒かけて滑らかにします。0.02から0.05なら、演奏に遅れずについていけて、段も聞こえません。
+コントローラーの値は、幅の128分の1ずつ段になって動き、音量やカットオフでは段ごとの跳びがクリックやジッパーのような音に聞こえます。`control`の後の`.lag(t)`は、段ごとの跳びを約`t`秒かけて滑らかにします。0.02から0.05なら、演奏に遅れずについていけて、段も聞こえません。14ビットで送るコントローラーは段が細かく、`input.control(cc)`はその精度で読みます。メッセージの`value`は7ビットです。
 
 ウインドコントローラーは1度に1音を吹き、息（多くはCC 2）が音の大きさです。声は1つで足ります。音高は滑るcontrolにし、息をそのままエンベロープにします。
 
@@ -287,7 +288,7 @@ for m in input.messages() {
 }
 ```
 
-ウインドコントローラーはレガートで吹くと、前の音のノートオフより先に次の音のノートオンを送ります。そのため、ノートオンで音高だけを動かしてノートオフには何もしなければレガートになり、音を止めるのは息だけになります。`input.control(2)`は、コントローラーが14ビットで送るときはその精度の息（CC 2とCC 34）を返します。メッセージの`value`は、そのメッセージ自身の7ビットしか持ちません。
+ノートオンで音高だけを動かしてノートオフには何もしなければ、レガートになり（[`MIDI`](../stdlib.ja.md#41-midi)にあるとおり、ウインドコントローラーは次の音のノートオンを先に送ります）、音を止めるのは息だけになります。
 
 ## Kauaiの曲の音
 

@@ -316,15 +316,14 @@ plays. `render` of it is a `ValueError`.
 A sound played from a keyboard or a wind controller is moved by the
 messages its input reads ([`MIDI`](../stdlib.md#41-midi)): a note on and
 off go to a `Voices`, and a bend, a controller (CC) or aftertouch to a
-`control`, set on the handle `play` gave. A control of one name is one
-value in a whole expression, so one in each voice's builder is set for
-every voice at once, as is a part made outside the builder:
+`control`, set on the handle `play` gave. One `set` moves every voice:
 
 ```culebra
 let {*} = Synth
 let bend = control("bend", 1.0)  # a ratio to each note's freq
 let vibrato = sine(5.5) * control("wheel", 0.0).lag(0.05) * 0.01
-let keys = Voices(8, |f| saw(f * bend * (1.0 + vibrato)).lowpass(2000.0) * adsr(0.01, 0.2, 0.7, 0.3) * velocity() * 0.1)
+let pitch = bend * (1.0 + vibrato)  # made once, shared by every voice
+let keys = Voices(8, |f| saw(f * pitch) * adsr(0.01, 0.2, 0.7, 0.3) * velocity() * 0.1)
 let h = play(keys, wait: false)
 println(h.ends())  # => nil
 h.stop()
@@ -337,8 +336,8 @@ for m in input.messages() {
   cond {
     m.kind == "note_on" => keys.note_on(m.note, velocity: m.velocity),
     m.kind == "note_off" => keys.note_off(m.note),
-    m.kind == "bend" => h.set("bend", 2.0 ** (m.bend * 2.0 / 12.0)),  # 2 semitones at full
-    m.kind == "cc" && m.cc == 1 => h.set("wheel", m.value),
+    m.kind == "bend" => h.set("bend", 2.0 ** (m.bend * 2.0 / 12.0)),  # a range of 2 semitones
+    m.kind == "cc" && m.cc == 1 => h.set("wheel", input.control(1)),
     _ => {},
   }
 }
@@ -347,7 +346,9 @@ for m in input.messages() {
 A controller moves in steps, a 128th of its range at a time, each a jump
 heard as a click or a zipper on a gain or a cutoff. `.lag(t)` after the
 control glides each step over about `t` seconds: 0.02 to 0.05 is short
-enough to follow a player and long enough to hide the steps.
+enough to follow a player and long enough to hide the steps. A controller
+that sends 14 bits takes finer steps, which `input.control(cc)` reads
+where a message's `value` holds 7.
 
 A wind controller plays one note at a time, and its breath (CC 2 on most) is
 how loud it is. One voice is enough: the note is a control that glides, and
@@ -373,11 +374,9 @@ for m in input.messages() {
 }
 ```
 
-A wind controller playing legato sends the new note's note on before the
-old note's note off, so a note on that only moves the pitch, with the note
-off left alone, plays legato, and the breath alone ends the sound.
-`input.control(2)` is the breath at 14 bits when the controller sends them
-(CC 2 with CC 34), where the message's `value` holds only its own 7.
+A note on that only moves the pitch, with the note off left alone, plays
+legato (a wind controller sends the new note on first, as
+[`MIDI`](../stdlib.md#41-midi) says), and the breath alone ends the sound.
 
 ## A sound for a Kauai song
 

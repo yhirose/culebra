@@ -10735,6 +10735,8 @@ voice's next note (fading out over the 5 ms before it); or else to the
 voice whose sounding note began first, which fades out over 5 ms first. A
 voice is silent until its first note, and a part every voice shares (made
 outside the builder, as a vibrato) runs from the start, its envelopes too.
+A `control` is one value in every voice, wherever it is made, so one `set`
+of it moves them all.
 A voice's graph is made once, not per note, so what keeps a state carries it
 from one note to the next: a `freq.lag(t)` glides from the voice's last note
 (a portamento), and from its first note's freq at the start, as `freq`
