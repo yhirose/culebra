@@ -747,6 +747,7 @@ inline constexpr auto tensor_zero_grad    = "culebra_runtime_tensor_zero_grad";
 inline constexpr auto tensor_detach       = "culebra_runtime_tensor_detach";
 inline constexpr auto array_slice         = "culebra_runtime_array_slice";
 inline constexpr auto slice               = "culebra_runtime_slice";
+inline constexpr auto index_get           = "culebra_runtime_index_get";
 inline constexpr auto make_range          = "culebra_runtime_make_range";
 inline constexpr auto is_range            = "culebra_runtime_is_range";
 inline constexpr auto is_sequence_object  = "culebra_runtime_is_sequence_object";

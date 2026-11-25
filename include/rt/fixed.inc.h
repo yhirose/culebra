@@ -1003,23 +1003,14 @@ inline bool culebra_runtime_object_get_named(JitObject* obj,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     JitObject* obj, int8_t key_tag, int64_t key_data,
-    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col,
-    bool own_receiver) {
-  // When the codegen index path (`obj[k]`) owns the receiver +1, a lookup that
-  // throws must release it — the caller only releases on the normal path and
-  // there is no landing pad on the unwind edge. One guard covers every throw
-  // here: the direct failures (bad-key TypeError, OOB IndexError, the
-  // shared-val reader's errors, KeyError) and a user `__index__` body's alike,
-  // since the dispatch only borrows what it is handed. The C++/compound-assign
-  // callers borrow the receiver and pass false; a TAG_STRING key is a borrowed
-  // cstring (never released). Nil guard entries no-op.
-  const JitValue recv_guard = own_receiver
-      ? JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)}
-      : JitValue{TAG_NIL, 0};
-  const JitValue key_guard = key_tag != TAG_STRING
-      ? JitValue{key_tag, key_data}
-      : JitValue{TAG_NIL, 0};
-  JitUnwindRelease g{key_guard, recv_guard};
+    int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
+  // The receiver is borrowed; the key is consumed on every path. One guard
+  // releases it on every throw here: the direct failures (bad-key TypeError,
+  // OOB IndexError, the shared-val reader's errors, KeyError) and a user
+  // `__index__` body's alike, since the dispatch only borrows what it is
+  // handed. A TAG_STRING key is a borrowed cstring (never released).
+  JitUnwindRelease g{key_tag != TAG_STRING ? JitValue{key_tag, key_data}
+                                           : JitValue{TAG_NIL, 0}};
   if (!_jit_keyed_by_entries(obj)) {
     // `arr[i]` on an array view: read element i from the inline bytes.
     if (auto* view = _jit_array_view(obj)) {
@@ -1623,7 +1614,7 @@ culebra_runtime_method_not_callable(int64_t line, int64_t col,
 //     (`as_callee`, the callee half of `3.6.round()`) says what an Object
 //     missing the method says; any other read says it cannot read it.
 //
-// `own_receiver` gate (C⑧, mirrors object_get_any's C③ contract): a bare
+// `own_receiver` gate (C⑧): a bare
 // property read `recv.key` on a +1-owned receiver (the postfix chain's rolling
 // handle) strands that +1 when this cold path throws — a dropped Shared view's
 // ClosedError, a closed namespace's AttributeError, a corrupt-view ValueError,
@@ -2393,6 +2384,45 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
     n += static_cast<int64_t>(obj->non_string_props->size());
   }
   return n;
+}
+
+// `recv[key]`: the one rule of Op::Index and Op::IndexWr on every lane (the
+// executor, the JIT past their inline Array-by-Long reads, the embedding
+// API's Value::at). Both operands are borrowed: the caller's registers keep
+// owning them, on the throw edge too. The result is a fresh +1. A Range key
+// slices, ahead of the receiver arms (an Object receiver slices too, into
+// culebra_runtime_slice's "expected Array"). A write-context read (`write`:
+// the read under `a[i] op= v`) takes array_set's bounds rule and neither a
+// Range nor a Tuple.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_index_get(
+    int8_t recv_tag, int64_t recv_data, int8_t key_tag, int64_t key_data,
+    bool write, int64_t line, int64_t col) {
+  int8_t t;
+  int64_t d;
+  if (!write && culebra_runtime_is_range(key_tag, key_data)) {
+    culebra_runtime_slice(recv_tag, recv_data, key_data, &t, &d, line, col);
+    return {t, d};
+  }
+  if (recv_tag == TAG_ARRAY || (!write && recv_tag == TAG_TUPLE)) {
+    if (key_tag != TAG_LONG)
+      culebra_runtime_type_error_typed(line, col, "Long", key_tag);
+    if (write && key_data < 0)
+      culebra_runtime_throw_error("IndexError", "index out of range", line,
+                                  col);
+    culebra_runtime_array_get(reinterpret_cast<JitArray*>(recv_data), key_data,
+                              &t, &d, line, col);
+    culebra_runtime_value_retain(t, d);  // array_get borrows the slot
+    return {t, d};
+  }
+  if (recv_tag == TAG_OBJECT) {
+    // object_get_any consumes a non-String key on every path; retain so the
+    // caller's register keeps its own.
+    culebra_runtime_value_retain(key_tag, key_data);
+    culebra_runtime_object_get_any(reinterpret_cast<JitObject*>(recv_data),
+                                   key_tag, key_data, &t, &d, line, col);
+    return {t, d};
+  }
+  culebra_runtime_type_error_typed(line, col, "Array", recv_tag);
 }
 
 }  // extern "C" (block continues in rt_dispatch.inc.h)

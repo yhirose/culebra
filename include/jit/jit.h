@@ -453,28 +453,11 @@ struct JIT {
   // absolute-symbol table below and the emitter cannot drift apart.
   static constexpr const char* rt_unwind_resume = "_Unwind_Resume_or_Rethrow";
 
-  // Exception-safe incremental construction of a heap value (a container
-  // literal appends elements; each element expression can throw). Returns an
-  // entry-block alloca holding the in-construction value: store the container
-  // into it, create an empty `cleanupBB`, set it as `current_lpad_` around the
-  // element compilation, restore `current_lpad_`, then call
-  // finish_construction_cleanup. The value is passed to the cleanup through
-  // this alloca (loaded there) rather than as an SSA value live across the
-  // invoke unwind edges — a call-result SSA live into a landingpad crashes
-  // SDAG-O0's register coalescer.
-  llvm::Value* make_build_guard(llvm::Value* containerVal) {
-    auto a = make_pending_guard();
-    builder_.CreateStore(containerVal, a);
-    return a;
-  }
-
-  // A nil-initialised guard slot for an in-flight `+1` temporary that is
-  // computed but not yet consumed while a later sub-call can throw (a heap
-  // object key before its value, a spread source before its consuming call).
-  // Store the temp before the risky call and clear it (store nil) after the
-  // call consumes/releases it; `finish_construction_cleanup` releases whatever
-  // it holds on the throw path. Releasing nil is a no-op, so an unused guard
-  // is harmless (and dead-code eliminates when no cleanup is emitted).
+  // A nil-initialised entry-block slot for an in-flight `+1`: store the value
+  // before a call that can throw and clear it (store nil) once the value is
+  // handed on; a cleanup pad releases whatever it holds. Releasing nil is a
+  // no-op, so that release is unconditional. The unwind-temp pool's slots
+  // are such slots.
   llvm::Value* make_pending_guard() {
     auto fn = builder_.GetInsertBlock()->getParent();
     llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
@@ -595,31 +578,6 @@ struct JIT {
     builder_.CreateStore(make_value(tagVal, dataVal), caughtSlot);
     builder_.CreateBr(handlerBB);
   }
-
-  // If any construction sub-call could throw, its invoke made `cleanupBB` a
-  // predecessor: fill it with "release the partial values (loaded from each
-  // `guard`), re-raise". Otherwise the block is unused and erased, leaving
-  // zero happy-path overhead (e.g. `[this, o]`, whose elements are
-  // non-throwing identifiers, emits no cleanup — and the guard stores dead-code
-  // eliminate). Restores the caller's insertion point.
-  void finish_construction_cleanup(llvm::BasicBlock* cleanupBB,
-                                   llvm::ArrayRef<llvm::Value*> guards,
-                                   llvm::BasicBlock* outerLpad) {
-    CleanupPad pad(*this, outerLpad);
-    if (!pad.open(cleanupBB, "build.lpad")) return;
-    // In-flight expression temporaries die first, then the partial
-    // container — the same order as finish_scope_cleanup / the frame ladder.
-    // Draining here and not only at the frame's ladder keeps the guarantee
-    // local: this pad hands the throw to `outerLpad`, which is null for a
-    // construction that is not nested inside one, so nothing downstream would
-    // drain the pool. The nil-clear makes any outer pad on the same unwind
-    // chain a no-op, so draining at every link never double-frees.
-    release_unwind_temps();
-    for (auto* guard : guards)
-      emit_value_release(
-          builder_.CreateLoad(valueType_, guard, "build.partial"));
-  }
-
 
   // C++ personality routine for this module's target. Windows (mingw) uses the
   // SEH personality `__gxx_personality_seh0` with the *same* Itanium-shaped
@@ -2347,60 +2305,6 @@ struct JIT {
     abort();
   }
 
-  // RAII throw-cleanup for borrowed `+1` temporaries that are live across a
-  // may-throw call and would otherwise strand on the runtime unwind edge — the
-  // borrowed callee closure held across a call (`compile_call`) or a builtin
-  // method's borrowed receiver (`compile_builtin_method` /
-  // `compile_user_method_over_builtin`), whose helper may raise. The caller's
-  // `Owned` handle releases the value on the *normal* path only: a C++ RAII
-  // destructor cannot run on an LLVM-level `throw`, so without this the value
-  // leaks whenever the callee throws.
-  //
-  // Reuses the container-literal cleanup machinery: spill each value to
-  // an entry alloca (never an SSA value live across the unwind edge — SDAG-O0's
-  // register coalescer crashes on that form), redirect `current_lpad_` to a
-  // fresh cleanup pad for the guard's lifetime, and on close fill that pad
-  // ("release each guarded value, re-raise to the outer lpad") or erase it when
-  // nothing inside threw (pred_empty DCE — zero happy-path cost). The normal and
-  // throw paths are mutually exclusive, so each value frees exactly once.
-  struct ThrowGuard {
-    JIT* jit_ = nullptr;
-    llvm::BasicBlock* cleanupBB_ = nullptr;
-    llvm::BasicBlock* savedLpad_ = nullptr;
-    std::vector<llvm::Value*> guards_;
-    bool closed_ = false;
-
-    // The guard's own pad is the sole unwind-edge releaser for its values, so
-    // they are also declared unwind-covered for its lifetime — the automatic
-    // unwind-temp window must not spill them a second time.
-    std::vector<llvm::Value*> covered_;
-
-    ThrowGuard(JIT* jit, std::initializer_list<llvm::Value*> vals) : jit_(jit) {
-      savedLpad_ = jit_->current_lpad_;
-      auto fn = jit_->builder_.GetInsertBlock()->getParent();
-      cleanupBB_ = llvm::BasicBlock::Create(jit_->ctx_, "throw.cleanup", fn);
-      guards_.reserve(vals.size());
-      for (auto* v : vals) guards_.push_back(jit_->make_build_guard(v));
-      covered_.assign(vals);
-      jit_->cover_on_unwind(covered_);
-      jit_->current_lpad_ = cleanupBB_;
-    }
-
-    // Fill (or DCE) the cleanup pad and restore the outer landingpad. Idempotent
-    // and dtor-invoked, so a straight-line region needs no explicit close.
-    void close() {
-      if (closed_) return;
-      closed_ = true;
-      jit_->uncover_on_unwind(covered_);
-      jit_->current_lpad_ = savedLpad_;
-      jit_->finish_construction_cleanup(cleanupBB_, guards_, savedLpad_);
-    }
-    ~ThrowGuard() { close(); }
-
-    ThrowGuard(const ThrowGuard&) = delete;
-    ThrowGuard& operator=(const ThrowGuard&) = delete;
-  };
-
   // --- The automatic unwind-temp window ---
   //
   // A codegen-owned `+1` held in an `Owned` is released by a C++ destructor,
@@ -2419,7 +2323,7 @@ struct JIT {
   // reused across calls — windows never overlap at runtime, a frame executes
   // one call at a time), and unwind_covered_ the values currently excluded
   // from windows because a callee-cleans contract names another
-  // unwind-edge releaser (a ThrowGuard pad, a callee-cleans helper) — spilling
+  // unwind-edge releaser (a callee-cleans helper's guard) — spilling
   // those too would double-free, the ASan-confirmed overlap trap.
   std::vector<Owned*> live_owned_;
   std::vector<llvm::Value*> unwind_temp_slots_;
@@ -2452,7 +2356,7 @@ struct JIT {
   }
   void uncover_on_unwind(const std::vector<llvm::Value*>& vals) {
     // Erase by value (last occurrence): guards may close out of strict LIFO
-    // order (an explicit ThrowGuard::close before an inner cover ends).
+    // order: the bookkeeping does not rely on covers closing LIFO.
     for (auto* v : vals) {
       auto it = std::find(unwind_covered_.rbegin(), unwind_covered_.rend(), v);
       if (it != unwind_covered_.rend()) unwind_covered_.erase(std::next(it).base());
@@ -5826,108 +5730,6 @@ struct JIT {
     auto old = emit_load_elem(ptr);
     emit_store_elem(ptr, val);
     emit_value_release(old);
-  }
-
-  // Point index `arr[key]` past Op::Index's inline Array/Tuple-by-Long read:
-  // an Object by Value key, or the type error an Array/Tuple key that is not
-  // a Long raises. Returns a +1 value. The Object path (object_get_any)
-  // consumes `key`, so callers must NOT release `key` themselves.
-  llvm::Value* emit_point_index(llvm::Value* arr, llvm::Value* key) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto i8Ty = builder_.getInt8Ty();
-    auto i64Ty = builder_.getInt64Ty();
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto tag = extract_tag(arr);
-
-    auto arrBB    = llvm::BasicBlock::Create(ctx_, "idx.arr", fn);
-    auto objBB    = llvm::BasicBlock::Create(ctx_, "idx.obj", fn);
-    auto errBB    = llvm::BasicBlock::Create(ctx_, "idx.err", fn);
-    auto mergeBB  = llvm::BasicBlock::Create(ctx_, "idx.merge", fn);
-
-    auto chkObjBB = llvm::BasicBlock::Create(ctx_, "idx.chk_obj", fn);
-    builder_.CreateCondBr(emit_is_seq(tag), arrBB, chkObjBB);
-    builder_.SetInsertPoint(chkObjBB);
-    auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
-    builder_.CreateCondBr(isObj, objBB, errBB);
-
-    builder_.SetInsertPoint(errBB);
-    // Non-indexable receiver (Set, String, …): release the owned receiver and
-    // key before the direct type error. emit_point_index consumes `key` on
-    // every returning path (callers never release it), but neither the array
-    // nor object arm runs here, so a heap key (`aSet[{a:1}]`) would strand.
-    // type_error_typed reads only the already extracted `tag` (never derefs a
-    // value), so release-before-throw is safe; non-refcounted values no-op.
-    emit_value_release(arr);
-    emit_value_release(key);
-    emit_type_error_typed("Array", tag);
-    builder_.CreateUnreachable();
-
-    // Allocate output slots in entry block; reused by both paths.
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                             fn->getEntryBlock().begin());
-    auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "idx.out.tag");
-    auto outData = entryB.CreateAlloca(i64Ty, nullptr, "idx.out.data");
-
-    // Array/Tuple: the key is not a Long, so value_to_long raises its type
-    // error — a *direct* error, no user dispatch — and the borrowed receiver
-    // and a heap key (`arr[[9]]`) would strand on the unwind edge. Guard both
-    // there; nothing continues past the throw.
-    builder_.SetInsertPoint(arrBB);
-    {
-      ThrowGuard arr_guard(this, {arr, key});
-      value_to_long(key);
-      builder_.CreateUnreachable();
-    }
-
-    // Object path: look up by Value key in the non-String sidecar. object_get_any
-    // owns the receiver on its *direct* KeyError edge (own_receiver=true) — a
-    // user `__index__` dispatch is exempt there (its callee frame already
-    // balances the receiver), so a codegen guard is unusable on this path.
-    builder_.SetInsertPoint(objBB);
-    auto objPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
-    emit_call(
-        module_->getOrInsertFunction(
-            rt::object_get_any, builder_.getVoidTy(), ptrTy, i8Ty, i64Ty,
-            ptrTy, ptrTy, i64Ty, i64Ty, builder_.getInt1Ty()),
-        {objPtr, extract_tag(key), extract_data(key), outTag, outData,
-         current_line_val(), current_column_val(), builder_.getInt1(true)});
-    builder_.CreateBr(mergeBB);
-
-    builder_.SetInsertPoint(mergeBB);
-    auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
-    auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
-    llvm::Value* result = make_value(tagLoaded, dataLoaded);
-    return result;
-  }
-
-  // Slice `receiver` by a pre-compiled range value via culebra_runtime_slice
-  // (which reads the range's bounds). The result is a fresh +1-owned value.
-  llvm::Value* emit_slice_value(llvm::Value* receiver, llvm::Value* range) {
-    auto i8Ty = builder_.getInt8Ty();
-    auto i64Ty = builder_.getInt64Ty();
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto fn = builder_.GetInsertBlock()->getParent();
-    llvm::IRBuilder<> entryB(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-    auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "slice.out.tag");
-    auto outData = entryB.CreateAlloca(i64Ty, nullptr, "slice.out.data");
-    {
-      // culebra_runtime_slice throws a direct "expected Array" type error for a
-      // non-sliceable receiver (no user dispatch), stranding the borrowed
-      // receiver and the codegen-owned range temp on the unwind edge — the
-      // caller (emit_index_step) releases both only on the normal path. Guard
-      // both so a slice on a non-sliceable receiver frees exactly once.
-      ThrowGuard guard(this, {receiver, range});
-      emit_call(
-          module_->getOrInsertFunction(
-              rt::slice, builder_.getVoidTy(), i8Ty, i64Ty, i64Ty, ptrTy,
-              ptrTy, i64Ty, i64Ty),
-          {extract_tag(receiver), extract_data(receiver), extract_data(range),
-           outTag, outData, current_line_val(), current_column_val()});
-    }
-    auto tagLoaded = builder_.CreateLoad(i8Ty, outTag);
-    auto dataLoaded = builder_.CreateLoad(i64Ty, outData);
-    llvm::Value* result = make_value(tagLoaded, dataLoaded);
-    return result;
   }
 
   // i1: is `key` a range value? (culebra_runtime_is_range short-circuits

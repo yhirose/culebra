@@ -195,12 +195,12 @@ enum class Op : uint8_t {
                // instruction's position (the `!!` token — both backends'
                // anchor, unlike the index errors' chain-head). Usually
                // falls through; the value passes unchanged.
-  Index,       // regs[a] = regs[b][regs[c]] (+1). A range-valued key
+  Index,       // regs[a] = regs[b][regs[c]] (+1), culebra_runtime_index_get
+               // on every lane. A range-valued key
                // (is_range — the full-shape gate) slices the receiver via
                // culebra_runtime_slice (Array copy / String view / Tuple
                // new tuple, else "expected Array"), checked before the
-               // receiver dispatch like emit_index_step. Otherwise the
-               // plain point read, emit_point_index's dispatch: Array/Tuple
+               // receiver dispatch. Otherwise the point read: Array/Tuple
                // by Long key (a negative index counts from the end), Object
                // by value key (object_get_any — KeyError on a plain-dict
                // miss), else "expected Array". The key stays register-owned
@@ -14054,7 +14054,7 @@ class Compiler {
   // point-only like the JIT's compound dispatch: a range key falls into their
   // Long-key check). A range key — literal (`xs[1..3]`) or stored — rides the
   // same Index op: its runtime is-range dispatch slices before the receiver
-  // arms (emit_index_step's order). The op is stamped at the enclosing node
+  // arms (culebra_runtime_index_get's order). The op is stamped at the enclosing node
   // `at`, where both backends anchor every index error.
   ExprResult compile_index_read(const peg::Ast& at, const peg::Ast& post,
                                 ExprResult recv) {
@@ -17348,52 +17348,26 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const JitValue& key = regs[in.c];
+          const bool wr = in.op == Op::IndexWr;
+          // An Array (or, read as a value, a Tuple) by an in-range Long is
+          // read here, as the JIT reads it inline; everything else, and every
+          // error, is culebra_runtime_index_get's.
+          if ((recv.tag == TAG_ARRAY || (!wr && recv.tag == TAG_TUPLE)) &&
+              key.tag == TAG_LONG && !(wr && key.data < 0)) {
+            auto* arr = reinterpret_cast<JitArray*>(recv.data);
+            int64_t idx = key.data;
+            if (_culebra_normalize_array_index(arr, idx)) {
+              const JitValue e = arr->items[idx];
+              _culebra_value_retain_impl(static_cast<int8_t>(e.tag), e.data);
+              regs[in.a] = e;
+              ++ip;
+              break;
+            }
+          }
           auto [line, col] = chunk_pos_at(c, VM_PC);
-          bool wr = in.op == Op::IndexWr;
-          // Range-valued key: slice, dispatched ahead of the receiver arms
-          // (emit_index_step's order — an Object receiver slices too, into
-          // culebra_runtime_slice's "expected Array"). Read-only on both
-          // operands; the result is fresh +1.
-          if (!wr && culebra_runtime_is_range(static_cast<int8_t>(key.tag),
-                                              key.data)) {
-            int8_t t;
-            int64_t d;
-            culebra_runtime_slice(static_cast<int8_t>(recv.tag), recv.data,
-                                  key.data, &t, &d, line, col);
-            regs[in.a] = JitValue{t, d};
-            ++ip;
-            break;
-          }
-          if (recv.tag == TAG_ARRAY || (!wr && recv.tag == TAG_TUPLE)) {
-            if (key.tag != TAG_LONG)
-              culebra_runtime_type_error_typed(
-                  line, col, "Long", static_cast<int8_t>(key.tag));
-            // Write-context read: array_set's bounds rule (guard_write_index).
-            if (wr && key.data < 0)
-              culebra_runtime_throw_error("IndexError", "index out of range",
-                                          line, col);
-            int8_t t;
-            int64_t d;
-            culebra_runtime_array_get(reinterpret_cast<JitArray*>(recv.data),
-                                      key.data, &t, &d, line, col);
-            _culebra_value_retain_impl(t, d);  // array_get borrows the slot
-            regs[in.a] = JitValue{t, d};
-          } else if (recv.tag == TAG_OBJECT) {
-            // object_get_any consumes a non-String key on every path;
-            // retain so the register keeps its owner +1. The result is +1.
-            _culebra_value_retain_impl(static_cast<int8_t>(key.tag),
-                                         key.data);
-            int8_t t;
-            int64_t d;
-            culebra_runtime_object_get_any(
-                reinterpret_cast<JitObject*>(recv.data),
-                static_cast<int8_t>(key.tag), key.data, &t, &d, line, col,
-                /*own_receiver=*/false);
-            regs[in.a] = JitValue{t, d};
-          } else {
-            culebra_runtime_type_error_typed(
-                line, col, "Array", static_cast<int8_t>(recv.tag));
-          }
+          regs[in.a] = culebra_runtime_index_get(
+              static_cast<int8_t>(recv.tag), recv.data,
+              static_cast<int8_t>(key.tag), key.data, wr, line, col);
           ++ip;
           break;
         } while (0);
@@ -17754,20 +17728,13 @@ struct Exec {
           const JitValue& recv = regs[in.b];
           const JitValue& key = regs[in.c];
           auto [line, col] = chunk_pos_at(c, VM_PC);
-          if (recv.tag == TAG_ARRAY) {
-            if (key.tag != TAG_LONG)
-              culebra_runtime_type_error_typed(
-                  line, col, "Long", static_cast<int8_t>(key.tag));
-            if (key.data < 0)
-              culebra_runtime_throw_error("IndexError", "index out of range",
-                                          line, col);
-            int8_t t;
-            int64_t d;
-            culebra_runtime_array_get(reinterpret_cast<JitArray*>(recv.data),
-                                      key.data, &t, &d, line, col);
-            _culebra_value_retain_impl(t, d);
-            regs[in.a] = JitValue{t, d};
-          } else if (recv.tag == TAG_OBJECT) {
+          if (recv.tag != TAG_OBJECT) {
+            // An Array's read or the type error: IndexWr's rule.
+            regs[in.a] = culebra_runtime_index_get(
+                static_cast<int8_t>(recv.tag), recv.data,
+                static_cast<int8_t>(key.tag), key.data, /*write=*/true, line,
+                col);
+          } else {
             // The nc receiver-kind rejects fire ahead of the read, the
             // JIT's nc dispatch — none of the three kinds is constructible
             // in the slice, but the mirror keeps the arm 1:1.
@@ -17803,9 +17770,6 @@ struct Exec {
                 reinterpret_cast<JitObject*>(recv.data),
                 static_cast<int8_t>(key.tag), key.data, &t, &d, line, col);
             regs[in.a] = JitValue{t, d};
-          } else {
-            culebra_runtime_type_error_typed(
-                line, col, "Array", static_cast<int8_t>(recv.tag));
           }
           ++ip;
           break;

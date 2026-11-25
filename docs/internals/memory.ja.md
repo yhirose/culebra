@@ -328,8 +328,8 @@ unwind edgeを持つ。
 
 | 契約 | unwindパスで誰が解放するか | 使われる場所 |
 |---|---|---|
-| Caller-cleans | 呼び出しサイトのregionごとのcleanup pad（`ThrowGuard`）。regionがthrowし得ないと分かれば削除される | 組み込みメソッドのreceiverと引数、呼び出しのcallee式、代入のターゲット、UFCSのcallee |
-| Callee-cleans-on-throw | ヘルパーの本体全体を覆うガード（`JitUnwindRelease`）。すべてのthrowが呼び手の一時値を解放する — user-dispatchウィンドウと直接エラーの両方 | 演算子の実装、receiver所有下でのindex/property access、not-a-functionエラーパス |
+| Caller-cleans | 呼び手のフレーム。ヘルパーはレジスタのオペランドを借りるだけなので（borrow operand contract、[`vm.md`](vm.md) §5.2）、throwの後もフレームが所有したままで、スコープのcleanup padが解放する | 組み込みメソッドのreceiverと引数、呼び出しのcallee、添字読み（`culebra_runtime_index_get`）のreceiverとkey、代入のターゲット、UFCSのcallee |
+| Callee-cleans-on-throw | ヘルパーの本体全体を覆うガード（`JitUnwindRelease`）。すべてのthrowが呼び手の一時値を解放する — user-dispatchウィンドウと直接エラーの両方 | 演算子の実装、not-a-functionエラーパス |
 | Callee-consumes-on-every-exit | ヘルパーの入口で宣言される所有引数ハンドル（`JitOwnedVal`）。通常returnとunwindの両方で解放する | すべてのnative closureが通る1つの入口（`_jit_native_entry`）。receiverとすべての引数を持ち、C++の本体は借りるだけ。高階関数のaccumulatorとcallback |
 | Borrow-neutral invoke | 呼び出し元がcalleeが消費する参照を作り他には一切触れないので、本体がreturnしてもthrowしても呼び出しはrefcount中立である | ユーザー定義dispatchが走るすべてのウィンドウ — 演算子オーバーロード、`eq`/`hash`/`cmp`、`__index__`、プロパティのgetter |
 | Transfer | 渡ってきた参照がそのまま返されるか、capture cellやslotに直接渡される | 遅延構築されるcombinatorのcapture cell |

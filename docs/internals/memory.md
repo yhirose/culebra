@@ -354,8 +354,8 @@ by construction:
 
 | Contract | Who releases on the unwind path | Used for |
 |---|---|---|
-| Caller-cleans | A per-region cleanup pad at the call site (`ThrowGuard`), eliminated when the region cannot throw | Builtin-method receivers and arguments, a call's callee expression, an assignment's target, the UFCS callee |
-| Callee-cleans-on-throw | A guard covering the helper's whole body (`JitUnwindRelease`), so every throw releases the caller's temps — the user-dispatch window's and the direct error's alike | Operator implementations, index/property access under receiver ownership, the not-a-function error path |
+| Caller-cleans | The caller's frame: the helper only borrows its register operands (the borrow operand contract, [`vm.md`](vm.md) §5.2), so a throw leaves them frame-owned and the scope's cleanup pad releases them | Builtin-method receivers and arguments, a call's callee, a subscript's receiver and key (`culebra_runtime_index_get`), an assignment's target, the UFCS callee |
+| Callee-cleans-on-throw | A guard covering the helper's whole body (`JitUnwindRelease`), so every throw releases the caller's temps — the user-dispatch window's and the direct error's alike | Operator implementations, the not-a-function error path |
 | Callee-consumes-on-every-exit | An owned-argument handle declared at the helper's entry (`JitOwnedVal`), releasing on both normal return and unwind | The one entry every native closure runs (`_jit_native_entry`), which holds the receiver and every argument while the C++ body only borrows them; higher-order-function accumulators and callbacks |
 | Borrow-neutral invoke | The invoker mints the reference the callee consumes and touches nothing else, so the call is refcount-neutral whether the body returns or throws | Every window where user-defined dispatch runs — operator overloads, `eq`/`hash`/`cmp`, `__index__`, property getters |
 | Transfer | The incoming reference is returned as-is, or handed directly into a capture cell or slot | A lazily-built combinator's capture cell |

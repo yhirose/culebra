@@ -2012,57 +2012,48 @@ struct Lowering {
           j.close_block_unreachable();
           break;
         }
-        case Op::Index: {
-          // The result is +1 on every arm.
+        case Op::Index:
+        case Op::IndexWr: {
+          // The result is +1 on both arms. IndexWr, the read under
+          // `a[i] op= v`, takes an Array only, by array_set's bounds rule.
+          const bool wr = in.op == Op::IndexWr;
           auto recv = load_slot(in.b);
           auto key = load_slot(in.c);
-          auto sliceBB = BasicBlock::Create(j.ctx_, "vidx.slice", fn);
-          auto pointBB = BasicBlock::Create(j.ctx_, "vidx.point", fn);
+          auto seqBB = BasicBlock::Create(j.ctx_, "vidx.seq", fn);
+          auto genBB = BasicBlock::Create(j.ctx_, "vidx.generic", fn);
           auto mergeBB = BasicBlock::Create(j.ctx_, "vidx.merge", fn);
-          // An Array or Tuple by a Long: the element read inline. Nothing
-          // here consumes an operand, so the registers need no minted +1s.
-          {
-            auto isSeq = j.emit_is_seq(j.extract_tag(recv));
-            auto isLong = b.CreateICmpEQ(j.extract_tag(key),
-                                         b.getInt8(TAG_LONG), "vidx.is_long");
-            auto seqBB = BasicBlock::Create(j.ctx_, "vidx.seq", fn);
-            auto genBB = BasicBlock::Create(j.ctx_, "vidx.generic", fn);
-            b.CreateCondBr(b.CreateAnd(isSeq, isLong), seqBB, genBB);
-            b.SetInsertPoint(seqBB);
-            auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
-            auto v = j.emit_load_elem(
-                j.emit_array_elem_ptr(arrPtr, j.extract_data(key), true));
-            j.emit_value_retain(v);
-            b.CreateStore(v, slots[in.a]);
-            b.CreateBr(mergeBB);
-            b.SetInsertPoint(genBB);
-          }
-          // emit_point_index consumes the key on its returning paths and
-          // releases both operands on its throw edges — and the slice arm's
-          // emit_slice_value releases both on its throw edge; the registers
-          // must stay slot-owned (the handler ladder is the sole slot
-          // releaser), so retain both here — the emitters' releases cancel
-          // the retains, and the surviving +1s are dropped on the normal
-          // paths.
-          j.emit_value_retain(recv);
-          j.emit_value_retain(key);
-          b.CreateCondBr(j.emit_is_range(key), sliceBB, pointBB);
-          b.SetInsertPoint(sliceBB);
-          {
-            // Slice reads both operands; drop both minted +1s here.
-            auto res = j.emit_slice_value(recv, key);
-            j.emit_value_release(recv);
-            j.emit_value_release(key);
-            b.CreateStore(res, slots[in.a]);
-            b.CreateBr(mergeBB);
-          }
-          b.SetInsertPoint(pointBB);
-          {
-            auto res = j.emit_point_index(recv, key);
-            j.emit_value_release(recv);
-            b.CreateStore(res, slots[in.a]);
-            b.CreateBr(mergeBB);
-          }
+          // An Array (or, read as a value, a Tuple) by a Long: the element
+          // read inline. Nothing here consumes an operand, so the registers
+          // need no minted +1s.
+          auto recvTag = j.extract_tag(recv);
+          auto isSeq = wr ? b.CreateICmpEQ(recvTag, b.getInt8(TAG_ARRAY))
+                          : j.emit_is_seq(recvTag);
+          auto isLong = b.CreateICmpEQ(j.extract_tag(key),
+                                       b.getInt8(TAG_LONG), "vidx.is_long");
+          b.CreateCondBr(b.CreateAnd(isSeq, isLong), seqBB, genBB);
+          b.SetInsertPoint(seqBB);
+          auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+          auto v = j.emit_load_elem(
+              j.emit_array_elem_ptr(arrPtr, j.extract_data(key), !wr));
+          j.emit_value_retain(v);
+          b.CreateStore(v, slots[in.a]);
+          b.CreateBr(mergeBB);
+          // Everything else is the executor's rule, out of line: a slice,
+          // an Object's lookup (its `__index__` included), the type errors.
+          // It borrows both operands, so the registers keep owning them on
+          // the throw edge, and the scope's ladder releases them there.
+          b.SetInsertPoint(genBB);
+          b.CreateStore(
+              j.emit_value_call(
+                  j.module_->getOrInsertFunction(
+                      rt::index_get, j.valueType_, b.getInt8Ty(), i64Ty,
+                      b.getInt8Ty(), i64Ty, b.getInt1Ty(), i64Ty, i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv),
+                   j.extract_tag(key), j.extract_data(key), b.getInt1(wr),
+                   j.current_line_val(), j.current_column_val()},
+                  "idx"),
+              slots[in.a]);
+          b.CreateBr(mergeBB);
           b.SetInsertPoint(mergeBB);
           break;
         }
@@ -4063,13 +4054,11 @@ struct Lowering {
                                             col);
           break;
         }
-        case Op::IndexWr:
         case Op::IndexCo: {
-          // The write-context reads — the read halves of the JIT's
-          // compound (IndexWr) and `??=` (IndexCo) index dispatches, with
-          // the register-borrow contract: nothing is consumed from a slot,
-          // the helpers' consuming key contract is fed by a retain, and
-          // the +1 result lands in the destination slot.
+          // The read half of `a[i] ??= v`, with the register-borrow
+          // contract: nothing is consumed from a slot, the helper's
+          // consuming key contract is fed by a retain, and the +1 result
+          // lands in the destination slot.
           auto recv = load_slot(in.b);
           auto key = load_slot(in.c);
           auto tag = j.extract_tag(recv);
@@ -4104,15 +4093,14 @@ struct Lowering {
             b.CreateBr(mergeBB);
           }
 
-          // Object arm: IndexCo passes the nc receiver-kind rejects (none
-          // constructible in the slice; mirrored 1:1) and reads through
-          // object_get_for_coalesce (a plain-dict miss is nil); IndexWr
-          // reads through object_get_any (KeyError on a miss). Both
-          // consume the key — the retain keeps the register the owner.
+          // Object arm: the nc receiver-kind rejects (none constructible in
+          // the slice; mirrored 1:1), then object_get_for_coalesce (a
+          // plain-dict miss is nil), which consumes the key — the retain
+          // keeps the register the owner.
           b.SetInsertPoint(objBB);
           {
             auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
-            if (in.op == Op::IndexCo) {
+            {
               auto kind = j.emit_call(
                   j.module_->getOrInsertFunction(rt::nc_receiver_kind,
                                                  b.getInt8Ty(), i64Ty),
@@ -4150,16 +4138,6 @@ struct Lowering {
                       b.getInt8Ty(), i64Ty, ptrTy, ptrTy, i64Ty, i64Ty),
                   {objPtr, j.extract_tag(key), j.extract_data(key), outTag,
                    outData, j.current_line_val(), j.current_column_val()});
-            } else {
-              j.emit_value_retain(key);
-              j.emit_call(
-                  j.module_->getOrInsertFunction(
-                      rt::object_get_any, b.getVoidTy(), ptrTy,
-                      b.getInt8Ty(), i64Ty, ptrTy, ptrTy, i64Ty, i64Ty,
-                      b.getInt1Ty()),
-                  {objPtr, j.extract_tag(key), j.extract_data(key), outTag,
-                   outData, j.current_line_val(), j.current_column_val(),
-                   b.getInt1(false)});
             }
             b.CreateBr(mergeBB);
           }

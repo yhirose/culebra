@@ -4,7 +4,7 @@
 # Source-level gate on the ownership discipline: the hand-placed RC forms are
 # migration debt / documented carve-outs, so their COUNT may only shrink. A
 # new bare retain/release (instead of the Owned / JitOwnedVal /
-# JitUnwindRelease / ThrowGuard layer) fails this check — lower a ceiling when
+# JitUnwindRelease layer) fails this check — lower a ceiling when
 # you convert a site, never raise one without review.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -206,12 +206,6 @@ ratchet sendable "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/send
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
 ratchet rt-borrow "runtime borrow->owned seam sites" "$rbrw" 13
-
-# Codegen-side hand-placed throw guards: the automatic unwind-temp window
-# is the default cleaner for a codegen-owned +1, so the hand-placed
-# ThrowGuard population should only shrink as sites migrate onto it.
-tg=$(grep -cE "ThrowGuard [a-z_]+\(this" include/jit/jit.h)
-ratchet throwguard "ThrowGuard sites (jit.h)" "$tg" 21
 
 # Raw-across-BB ENFORCE. consume() is block-pinned (using the raw
 # outside its pin block aborts codegen), so the only ways a bare +1 can

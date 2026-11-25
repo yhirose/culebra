@@ -177,41 +177,17 @@ class Value {
     return at(Value(key));
   }
   Value operator[](int64_t idx) const { return at(Value(idx)); }
-  // Any hashable key (a Long index, a Tuple, ...) — Op::Index's dispatch.
+  // Any hashable key (a Long index, a Tuple, ...): Op::Index's rule
+  // (culebra_runtime_index_get). An Object's lookup can run the class's
+  // `__index__`, a call into the script, so what that throws reaches the host
+  // as Embed::call's failure does.
   Value at(const Value& key) const {
-    const JitValue k = key.v_;
-    // A Range key slices, ahead of the receiver arms — Op::Index's order.
-    if (culebra_runtime_is_range(k.tag, k.data)) {
-      int8_t t;
-      int64_t d;
-      culebra_runtime_slice(v_.tag, v_.data, k.data, &t, &d, 0, 0);
-      return Value(JitValue{t, d}, Adopt{});
-    }
-    if (v_.tag == TAG_ARRAY || v_.tag == TAG_TUPLE) {
-      if (k.tag != TAG_LONG)
-        culebra_runtime_type_error_typed(0, 0, "Long", k.tag);
-      int8_t t;
-      int64_t d;
-      culebra_runtime_array_get(reinterpret_cast<JitArray*>(v_.data), k.data,
-                                &t, &d, 0, 0);
-      culebra_runtime_value_retain(t, d);  // array_get borrows the slot
-      return Value(JitValue{t, d}, Adopt{});
-    }
-    if (v_.tag == TAG_OBJECT) {
-      // object_get_any consumes a non-String key on every path.
-      culebra_runtime_value_retain(k.tag, k.data);
-      // The lookup can run the class's `__index__`: a call into the script,
-      // so what that throws reaches the host as Embed::call's failure does.
-      return culebra_runtime_call_from_host([&] {
-        int8_t t;
-        int64_t d;
-        culebra_runtime_object_get_any(reinterpret_cast<JitObject*>(v_.data),
-                                       k.tag, k.data, &t, &d, 0, 0,
-                                       /*own_receiver=*/false);
-        return Value(JitValue{t, d}, Adopt{});
-      });
-    }
-    culebra_runtime_type_error_typed(0, 0, "Array", v_.tag);
+    return culebra_runtime_call_from_host([&] {
+      return Value(culebra_runtime_index_get(v_.tag, v_.data, key.v_.tag,
+                                             key.v_.data, /*write=*/false, 0,
+                                             0),
+                   Adopt{});
+    });
   }
 
   // An Object's entries in insertion order — `for k, v in obj`'s set (own
