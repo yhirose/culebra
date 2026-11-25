@@ -5559,6 +5559,17 @@ struct Lowering {
         j.emit_value_release(load_slot(s));
       b.CreateStore(j.make_nil(), slots[s]);
     };
+    // A temp rung calls the release helper alone, whose own first act is the
+    // refcount test: the inline test made two blocks per release on a throw's
+    // path, and every rung of the shared ladders carried it (−9% translation
+    // of the largest functions, the ordinary path unchanged).
+    auto release_slot_untested = [&](int32_t s, bool) {
+      if (s < 0 || s >= c.num_slots) return;
+      auto v = load_slot(s);
+      j.emit_refcount_call(rt::value_release, j.extract_tag(v),
+                           j.extract_data(v));
+      b.CreateStore(j.make_nil(), slots[s]);
+    };
     auto restoreFn = j.module_->getOrInsertFunction(rt::recursion_restore,
                                                     b.getVoidTy(), i64Ty);
     // The block that releases slot `s` and continues into `next`, made once
@@ -5599,7 +5610,7 @@ struct Lowering {
         BasicBlock* next = foot;
         for (int32_t s : t)
           next = rung(rungs, "vm.temps.rel", s, /*as_cell=*/false, next,
-                      release_slot_ir);
+                      release_slot_untested);
         return next;
       };
       for (const auto* tp : group) {

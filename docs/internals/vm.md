@@ -2085,6 +2085,14 @@ with 36 to 56% fewer. Loading the 277-line function's module takes 2.65 s
 of optimize and codegen instead of 2.82, and mini-culebra's 40 s instead
 of 48.
 
+A statement's temporaries are the exception: their rungs (`vm.temps.rel*`)
+call the helper alone in every function, optimized or not. The ladders are
+shared across throw sites, so the test made two blocks per rung and the phis
+that join them; dropping it from the temporaries only shortens
+`dev/look.cul`'s `--jit` translation from 108 s to 98 s, and the
+`value_physics.cul` and `vector_loop.cul` rows do not move (the scope pads
+keep their test, which is what the scalars row above depends on).
+
 A property read as a value (`PropVal` with no declared type,
 `JIT::emit_property_value`) has the shape of the read programs make
 most: an own field of an Object whose shape the site's cache knows is
