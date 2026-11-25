@@ -311,6 +311,74 @@ lfo.stop()
 A sound that reads a box has no end of its own, and is heard only as it
 plays. `render` of it is a `ValueError`.
 
+## Playing from a MIDI controller
+
+A sound played from a keyboard or a wind controller is moved by the
+messages its input reads ([`MIDI`](../stdlib.md#41-midi)): a note on and
+off go to a `Voices`, and a bend, a controller (CC) or aftertouch to a
+`control`, set on the handle `play` gave. A control of one name is one
+value in a whole expression, so one in each voice's builder is set for
+every voice at once, as is a part made outside the builder:
+
+```culebra
+let {*} = Synth
+let bend = control("bend", 1.0)  # a ratio to each note's freq
+let vibrato = sine(5.5) * control("wheel", 0.0).lag(0.05) * 0.01
+let keys = Voices(8, |f| saw(f * bend * (1.0 + vibrato)).lowpass(2000.0) * adsr(0.01, 0.2, 0.7, 0.3) * velocity() * 0.1)
+let h = play(keys, wait: false)
+println(h.ends())  # => nil
+h.stop()
+```
+
+```culebra
+# doctest: skip (it needs a MIDI device)
+let input = MIDI.Input.new(MIDI.inputs()[0].id)
+for m in input.messages() {
+  cond {
+    m.kind == "note_on" => keys.note_on(m.note, velocity: m.velocity),
+    m.kind == "note_off" => keys.note_off(m.note),
+    m.kind == "bend" => h.set("bend", 2.0 ** (m.bend * 2.0 / 12.0)),  # 2 semitones at full
+    m.kind == "cc" && m.cc == 1 => h.set("wheel", m.value),
+    _ => {},
+  }
+}
+```
+
+A controller moves in steps, a 128th of its range at a time, each a jump
+heard as a click or a zipper on a gain or a cutoff. `.lag(t)` after the
+control glides each step over about `t` seconds: 0.02 to 0.05 is short
+enough to follow a player and long enough to hide the steps.
+
+A wind controller plays one note at a time, and its breath (CC 2 on most) is
+how loud it is. One voice is enough: the note is a control that glides, and
+the breath is the envelope:
+
+```culebra
+let {*} = Synth
+let breath = control("breath", 0.0).lag(0.02)
+let freq = hz(control("note", 60.0)).lag(0.05)
+let h = saw(freq).lowpass(300.0 + breath * 4000.0) * breath * 0.3 |> play(wait: false)
+println(h.ends())  # => nil
+h.stop()
+```
+
+```culebra
+# doctest: skip (it needs a MIDI device)
+for m in input.messages() {
+  cond {
+    m.kind == "note_on" => h.set("note", m.note),
+    m.kind == "cc" && m.cc == 2 => h.set("breath", input.control(2)),
+    _ => {},
+  }
+}
+```
+
+A wind controller playing legato sends the new note's note on before the
+old note's note off, so a note on that only moves the pitch, with the note
+off left alone, plays legato, and the breath alone ends the sound.
+`input.control(2)` is the breath at 14 bits when the controller sends them
+(CC 2 with CC 34), where the message's `value` holds only its own 7.
+
 ## A sound for a Kauai song
 
 A Kauai song names the sound each voice plays, and a program can supply

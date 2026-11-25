@@ -467,7 +467,10 @@ ctest.entries 44
 # it opens a window).
 # 1256 since Scene's detail texture, in en and ja (ripples on a ground's
 # water, which skips: it needs a View).
-docs.blocks 1256
+# 1264 since the Synth guide plays from a MIDI controller, in en and ja (a
+# keyboard's and a wind controller's sound, and the loops that move them,
+# which skip: they need a MIDI device).
+docs.blocks 1264
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
