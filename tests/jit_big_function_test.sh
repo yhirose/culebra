@@ -241,5 +241,31 @@ if (( marks == 0 )); then
   fail=1
 fi
 
+# A cell opens a cleanup segment in every open scope, and the segments of one
+# scope share one release ladder (Lowering's emit_shared): the unwind code of
+# a top level, and of a block in it, grows with its cells, not with their
+# square. Doubling the cells about doubles main's releases; one ladder per
+# segment made it nearly four times (a large program's main once carried
+# 400k of them).
+cells() { # <n>: main's release calls, for n captured bindings at each level
+  local n=$1 i
+  {
+    for ((i = 1; i <= n; i++)); do printf 'let a%d = [%d]\nfn f%d() { a%d }\n' $i $i $i $i; done
+    echo 'if a1.size() > 0 {'
+    for ((i = 1; i <= n; i++)); do printf '  let b%d = [%d]\n  let g%d = fn () { b%d }\n' $i $i $i $i; done
+    printf '  println(g1()[0] + f%d()[0])\n}\n' "$n"
+  } > "$TMP/p.cul"
+  emit -O0 > "$TMP/cells.ll"
+  fn_of __culebra_main "$TMP/cells.ll" |
+    grep -cE 'call void @culebra_runtime_(cell|value)_release'
+}
+r40=$(cells 40)
+r80=$(cells 80)
+if (( r40 == 0 || r80 == 0 || r80 * 4 > r40 * 10 )); then
+  echo "FAIL: main's unwind releases grow faster than its cells:" \
+    "$r40 for 40 a level, $r80 for 80"
+  fail=1
+fi
+
 [[ $fail -eq 0 ]] && echo "jit_big_function_test: OK"
 exit $fail

@@ -5583,6 +5583,22 @@ struct Lowering {
     };
     auto restoreFn = j.module_->getOrInsertFunction(rt::recursion_restore,
                                                     b.getVoidTy(), i64Ty);
+    // The block that releases slot `s` and continues into `next`, made once
+    // per (slot, as a cell, next): an unwind ladder is a chain of these, and
+    // ladders that end alike share the rungs they have in common.
+    using Rungs = std::map<std::tuple<int32_t, bool, BasicBlock*>, BasicBlock*>;
+    auto rung = [&](Rungs& rungs, const char* name, int32_t s, bool as_cell,
+                    BasicBlock* next, auto&& release) {
+      auto [it, fresh] = rungs.try_emplace({s, as_cell, next}, nullptr);
+      if (!fresh) return it->second;
+      auto* bb = BasicBlock::Create(j.ctx_, std::format("{}{}", name, s), fn);
+      auto* saved = b.GetInsertBlock();
+      b.SetInsertPoint(bb);
+      release(s, as_cell);
+      b.CreateBr(next);
+      b.SetInsertPoint(saved);
+      return it->second = bb;
+    };
 
     // The temp preludes first: their re-raise edges are what keep the scope
     // pads they continue into alive (a pad nothing unwinds to is erased).
@@ -5597,30 +5613,15 @@ struct Lowering {
     for (const auto& [k, group] : temps_by_scope) {
       JIT::CleanupPad pad(j, pads[static_cast<size_t>(k)]);
       BasicBlock* foot = nullptr;
-      std::map<std::vector<int32_t>, BasicBlock*> rungs;
+      Rungs rungs;
       // The block that releases `t.back()` and descends the rest, building
       // whatever rungs of the chain do not exist yet.
       auto rung_for = [&](const std::vector<int32_t>& t) {
         if (!foot) foot = BasicBlock::Create(j.ctx_, "vm.temps.done", fn);
         BasicBlock* next = foot;
-        std::vector<int32_t> pre;  // grown in place; copied only per new rung
-        pre.reserve(t.size());
-        for (size_t n = 1; n <= t.size(); ++n) {
-          pre.push_back(t[n - 1]);
-          if (auto it = rungs.find(pre); it != rungs.end()) {
-            next = it->second;
-            continue;
-          }
-          auto* bb = BasicBlock::Create(
-              j.ctx_, std::format("vm.temps.rel{}", pre.back()), fn);
-          auto* saved = b.GetInsertBlock();
-          b.SetInsertPoint(bb);
-          release_slot_ir(pre.back(), /*as_cell=*/false);
-          b.CreateBr(next);
-          b.SetInsertPoint(saved);
-          rungs.emplace(pre, bb);
-          next = bb;
-        }
+        for (int32_t s : t)
+          next = rung(rungs, "vm.temps.rel", s, /*as_cell=*/false, next,
+                      release_slot_ir);
         return next;
       };
       for (const auto* tp : group) {
@@ -5635,82 +5636,65 @@ struct Lowering {
       if (foot) b.SetInsertPoint(foot);
     }
 
-    // Then the scope pads, innermost outward, so each one's re-raise edge
-    // exists before its encloser decides whether anything reaches it. Order
-    // within a pad is Exec::unwind's: restore this frame's depth (the
-    // unwound callees never ran their `leave`, and a defer body's own calls
-    // must count from here), run the scope's pending defers, release its
-    // bindings in reverse declaration order, and — at the frame — uncount
-    // before the throw travels on.
-    for (size_t k = 0; k < c.cleanups.size(); ++k) {
-      const auto& cu = c.cleanups[k];
-      bool frame = cu.parent < 0;
-      JIT::CleanupPad pad(
-          j, frame ? nullptr : pads[static_cast<size_t>(cu.parent)]);
-      if (!pad.open(pads[k], "vm.scope.exc")) continue;
-      // Read before the releases below, which nil the slot.
-      llvm::Value* site =
-          frame && cu.site_slot >= 0
-              ? j.extract_data(b.CreateLoad(j.valueType_, slots[cu.site_slot]))
-              : nullptr;
-      auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
-      b.CreateCall(restoreFn, {d});
-      // Drain the JIT's own unwind-temp pool too. A shared emitter called from
-      // an arm above can park a `+1` in an Owned handle rather than a register
-      // — emit_for_open_protocol holds the iterator that way while it
-      // validates the protocol — and that pool lives in the LLVM function, so
-      // the bytecode temp table (which the preludes above stand on) cannot see
-      // it. Without this a rejected iterator stranded its object
-      // (`for x in {iter: fn () { {a: 1} }}`). Releasing nil-clears each slot,
-      // so an enclosing pad draining again is a no-op.
+    // Then the scope pads: enter_pad's prelude, the bindings released in
+    // reverse declaration order, then leave_pad.
+    bool hush_frame = c.suppress_frame_drop;
+    auto suppress = [&](int v) {
+      b.CreateCall(j.module_->getOrInsertFunction(rt::set_drop_suppressed,
+                                                  b.getVoidTy(),
+                                                  b.getInt8Ty()),
+                   {b.getInt8(static_cast<int8_t>(v))});
+    };
+    // A scope's pending defers (Exec::unwind's `replaced`): a defer that
+    // throws replaces the exception this pad carries and the ladder goes on
+    // with it — the relay swaps the carried exception and rejoins, so the
+    // bindings below still release and the enclosing pads see the
+    // replacement. Returns whether the scope's own defer threw, for a try
+    // scope to read; nullptr when the scope declares none.
+    auto run_defers = [&](const Chunk::Cleanup& cu) -> llvm::Value* {
+      if (cu.defer_mark_slot < 0) return nullptr;
+      auto markV = b.CreateLoad(j.valueType_, slots[cu.defer_mark_slot]);
+      auto ranBB = BasicBlock::Create(j.ctx_, "vm.scope.defers.ran", fn);
+      auto relayBB = BasicBlock::Create(j.ctx_, "vm.scope.defer.exc", fn);
+      auto* fromBB = b.GetInsertBlock();
+      b.CreateInvoke(j.module_->getFunction(rt::defer_run_to), ranBB, relayBB,
+                     {j.extract_data(markV)});
+      j.emit_landingpad(relayBB, "defer.exc", /*open=*/false,
+                        /*replaces=*/true);
+      b.CreateBr(ranBB);
+      b.SetInsertPoint(ranBB);
+      if (cu.handler == Chunk::kNoHandler) return nullptr;
+      auto* threw = b.CreatePHI(b.getInt1Ty(), 2, "defer.threw");
+      threw->addIncoming(b.getFalse(), fromBB);
+      threw->addIncoming(b.getTrue(), relayBB);
+      return threw;
+    };
+    // What every scope pad does before its releases, in Exec::unwind's
+    // order: restore this frame's depth (the unwound callees never ran their
+    // `leave`, and a defer body's own calls must count from here), drain the
+    // unwind temps, run the pending defers.
+    //
+    // The JIT's own unwind-temp pool drains here too. A shared emitter called
+    // from an arm above can park a `+1` in an Owned handle rather than a
+    // register — emit_for_open_protocol holds the iterator that way while it
+    // validates the protocol — and that pool lives in the LLVM function, so
+    // the bytecode temp table (which the preludes above stand on) cannot see
+    // it. Without this a rejected iterator stranded its object
+    // (`for x in {iter: fn () { {a: 1} }}`). Releasing nil-clears each slot,
+    // so an enclosing pad draining again is a no-op.
+    auto enter_pad = [&](const Chunk::Cleanup& cu) -> llvm::Value* {
+      b.CreateCall(restoreFn, {b.CreateLoad(i64Ty, depthSlot, "rec.d")});
       j.release_unwind_temps();
-      // Set when this scope's own defer threw (Exec::unwind's flag of the
-      // same name): a try scope then hands the replacement on unclassified.
-      llvm::Value* ownDeferThrew = nullptr;
-      if (cu.defer_mark_slot >= 0) {
-        // A defer that throws replaces the exception this pad carries and
-        // the ladder goes on with it (Exec::unwind's `replaced`): the relay
-        // swaps the carried exception and rejoins, so the bindings below
-        // still release and the enclosing pads see the replacement.
-        auto markV = b.CreateLoad(j.valueType_, slots[cu.defer_mark_slot]);
-        auto ranBB = BasicBlock::Create(j.ctx_, "vm.scope.defers.ran", fn);
-        auto relayBB = BasicBlock::Create(j.ctx_, "vm.scope.defer.exc", fn);
-        auto* fromBB = b.GetInsertBlock();
-        b.CreateInvoke(j.module_->getFunction(rt::defer_run_to), ranBB,
-                       relayBB, {j.extract_data(markV)});
-        j.emit_landingpad(relayBB, "defer.exc", /*open=*/false,
-                          /*replaces=*/true);
-        b.CreateBr(ranBB);
-        b.SetInsertPoint(ranBB);
-        if (cu.handler != Chunk::kNoHandler) {
-          auto* threw = b.CreatePHI(b.getInt1Ty(), 2, "defer.threw");
-          threw->addIncoming(b.getFalse(), fromBB);
-          threw->addIncoming(b.getTrue(), relayBB);
-          ownDeferThrew = threw;
-        }
-      }
-      bool hush = frame && c.suppress_frame_drop;
-      auto suppress = [&](int v) {
-        b.CreateCall(j.module_->getOrInsertFunction(rt::set_drop_suppressed,
-                                                    b.getVoidTy(),
-                                                    b.getInt8Ty()),
-                     {b.getInt8(static_cast<int8_t>(v))});
-      };
-      if (hush) suppress(1);
-      for (int32_t s : chunk_release_order(c, cu.slot_lo, cu.slot_hi)) {
-        // A for-in's own step closes its iterator here, swallowing a
-        // throwing dispose — an exception is already in flight (docs §18.5).
-        if (cu.dispose_base >= 0 && s == cu.dispose_base + kForIter)
-          emit_for_dispose(cu.dispose_base, /*swallow=*/true, /*line=*/0,
-                           /*col=*/0);
-        release_slot_ir(s, chunk_slot_is_cell(c, s, cu.cells_before));
-      }
+      return run_defers(cu);
+    };
+    // What a scope pad does after its releases, in Exec::unwind's order. At
+    // the frame: resolve the owned region once (see the executor's own
+    // unwind for why only here), re-anchor a library frame's call site — a
+    // replacement rides the relay — and uncount before the throw travels on.
+    auto leave_pad = [&](bool frame, bool hush, llvm::Value* site) {
       if (hush) suppress(0);
-      // The frame's step resolves the owned region once — see the
-      // executor's own unwind for why only here.
       if (frame && !hush && c.owned_frame_depth >= 0)
         j.emit_owned_scope_exit(load_owned_mark(c.owned_frame_depth));
-      // Exec::unwind's library-frame step; a replacement rides the relay.
       if (site) {
         auto doneBB = BasicBlock::Create(j.ctx_, "vm.scope.anchored", fn);
         auto relayBB = BasicBlock::Create(j.ctx_, "vm.scope.anchor.exc", fn);
@@ -5723,8 +5707,186 @@ struct Lowering {
         b.SetInsertPoint(doneBB);
       }
       if (frame && chunk_idx != 0)
-        b.CreateCall(restoreFn, {b.CreateSub(d, b.getInt64(1), "rec.d1")});
-      if (cu.handler == Chunk::kNoHandler) continue;  // pad dtor re-raises
+        b.CreateCall(restoreFn,
+                     {b.CreateSub(b.CreateLoad(i64Ty, depthSlot, "rec.d"),
+                                  b.getInt64(1), "rec.d1")});
+    };
+    // The pad a scope hands its throw to: its encloser's, or none at the
+    // frame.
+    auto pad_of = [&](int32_t parent) -> BasicBlock* {
+      return parent < 0 ? nullptr : pads[static_cast<size_t>(parent)];
+    };
+    // One binding's release on the throw path. A for-in's own step closes
+    // its iterator as it reaches the cursor, swallowing a throwing dispose —
+    // an exception is already in flight (docs §18.5).
+    auto release_on_unwind = [&](const Chunk::Cleanup& cu, int32_t s,
+                                 bool as_cell) {
+      if (cu.dispose_base >= 0 && s == cu.dispose_base + kForIter)
+        emit_for_dispose(cu.dispose_base, /*swallow=*/true, /*line=*/0,
+                         /*col=*/0);
+      release_slot_ir(s, as_cell);
+    };
+
+    // The segments of one scope differ only in how far their range reaches,
+    // how many cells existed (a cell opens a segment in every open scope) and
+    // which segment of the encloser they hand the throw to. Emitted one
+    // ladder each they cost the square of the cells a scope makes — a
+    // module's top level with a hundred captured bindings spent most of its
+    // IR here. Segments that agree on everything else share one descent: a
+    // rung releases one slot and continues into the rung below it, interned
+    // by (slot, as a cell, next), so a segment whose ladder ends like
+    // another's costs only the rungs where it differs. The foot runs the
+    // scope's exit once and hands the throw on, to the encloser the entry
+    // came for when the members have several. rustc's drop tree shares its
+    // unwind drops the same way. Two kinds of pad keep a ladder of their own,
+    // as each carries a value of its own entry into the tail: a library
+    // frame's call site, read before the releases nil its slot, and a try
+    // scope's "its own defer threw".
+    auto shares_ladder = [&](const Chunk::Cleanup& cu) {
+      return !(cu.parent < 0 && cu.site_slot >= 0) &&
+             !(cu.defer_mark_slot >= 0 && cu.handler != Chunk::kNoHandler);
+    };
+    // The depth keeps a scope apart from the scopes it encloses, which may
+    // agree with it on all the rest (an inner scope opened before the outer
+    // bound anything): a group holding a pad and its encloser would open the
+    // encloser before the pad's re-raise edge reaches it. A split closes
+    // every open scope at once, so one scope's segments share a depth.
+    std::vector<uint32_t> depth(c.cleanups.size(), 0);
+    for (size_t k = c.cleanups.size(); k-- > 0;)
+      if (int32_t p = c.cleanups[k].parent; p >= 0)
+        depth[k] = depth[static_cast<size_t>(p)] + 1;
+    auto ladder_key = [&](size_t k) {
+      const auto& cu = c.cleanups[k];
+      return std::tuple{depth[k],       cu.defer_mark_slot, cu.handler,
+                        cu.caught_slot, cu.dispose_base,    cu.slot_lo};
+    };
+    // Every pad is one group's member, a pad with a ladder of its own the
+    // only member of its group.
+    std::vector<std::vector<size_t>> groups;
+    std::vector<size_t> group_of(c.cleanups.size());
+    {
+      std::map<decltype(ladder_key(0)), size_t> by_key;
+      for (size_t k = 0; k < c.cleanups.size(); ++k) {
+        size_t g = groups.size();
+        if (shares_ladder(c.cleanups[k]))
+          g = by_key.try_emplace(ladder_key(k), g).first->second;
+        if (g == groups.size()) groups.emplace_back();
+        groups[g].push_back(k);
+        group_of[k] = g;
+      }
+    }
+
+    auto emit_shared = [&](const std::vector<size_t>& members) {
+      const auto& head = c.cleanups[members.front()];
+      bool frame = head.parent < 0;
+      bool hush = frame && hush_frame;
+      // One region per encloser, in the order first reached; their exits are
+      // emitted (and the regions closed) in reverse, as they nest.
+      std::vector<std::pair<int32_t, std::unique_ptr<JIT::CleanupPad>>> exits;
+      std::vector<size_t> exit_of(members.size());
+      for (size_t m = 0; m < members.size(); ++m) {
+        int32_t parent = c.cleanups[members[m]].parent;
+        size_t e = 0;
+        while (e < exits.size() && exits[e].first != parent) ++e;
+        if (e == exits.size())
+          exits.emplace_back(
+              parent,
+              std::make_unique<JIT::CleanupPad>(j, pad_of(parent)));
+        exit_of[m] = e;
+      }
+      // Which encloser this entry came for, when the foot has to choose.
+      llvm::AllocaInst* exitSlot = nullptr;
+      if (exits.size() > 1) {
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        exitSlot = eb.CreateAlloca(b.getInt32Ty(), nullptr, "vm.scope.exit");
+      }
+      std::vector<bool> used(exits.size(), false);
+      BasicBlock* foot = nullptr;
+      Rungs rungs;
+      for (size_t m = 0; m < members.size(); ++m) {
+        size_t k = members[m];
+        const auto& cu = c.cleanups[k];
+        if (!exits[exit_of[m]].second->open(pads[k], "vm.scope.exc")) continue;
+        used[exit_of[m]] = true;
+        if (!foot) foot = BasicBlock::Create(j.ctx_, "vm.scope.foot", fn);
+        if (exitSlot)
+          b.CreateStore(b.getInt32(static_cast<uint32_t>(exit_of[m])),
+                        exitSlot);
+        enter_pad(cu);
+        if (hush) suppress(1);
+        auto order = chunk_release_order(c, cu.slot_lo, cu.slot_hi);
+        BasicBlock* next = foot;
+        for (auto it = order.rbegin(); it != order.rend(); ++it)
+          next = rung(rungs, "vm.scope.rel", *it,
+                      chunk_slot_is_cell(c, *it, cu.cells_before), next,
+                      [&](int32_t s, bool cell) {
+                        release_on_unwind(cu, s, cell);
+                      });
+        b.CreateBr(next);
+      }
+      if (foot) {
+        b.SetInsertPoint(foot);
+        leave_pad(frame, hush, /*site=*/nullptr);
+      }
+      // The exits some entry reached; the first is the switch's default.
+      std::vector<BasicBlock*> exitBBs(exits.size(),
+                                       foot ? b.GetInsertBlock() : nullptr);
+      if (foot && exitSlot) {
+        llvm::SwitchInst* sw = nullptr;
+        for (size_t e = 0; e < exits.size(); ++e) {
+          if (!used[e]) continue;
+          exitBBs[e] = BasicBlock::Create(j.ctx_, "vm.scope.out", fn);
+          if (!sw)
+            sw = b.CreateSwitch(b.CreateLoad(b.getInt32Ty(), exitSlot),
+                                exitBBs[e]);
+          else
+            sw->addCase(b.getInt32(static_cast<uint32_t>(e)), exitBBs[e]);
+        }
+      }
+      // Each exit hands the throw to its encloser: a try scope classifies it
+      // first, and a pad's destructor re-raises whatever is left open.
+      for (size_t e = exits.size(); e-- > 0;) {
+        if (used[e]) {
+          b.SetInsertPoint(exitBBs[e]);
+          if (head.handler != Chunk::kNoHandler) {
+            j.emit_open_exception();
+            j.emit_classify_tail(
+                pad_of(exits[e].first), depthSlot, slots[head.caught_slot],
+                blocks.at(static_cast<int32_t>(head.handler)));
+          }
+        }
+        exits[e].second.reset();
+      }
+    };
+
+    // Emitted innermost first: a pad is erased when nothing unwinds to it, so
+    // every pad that hands its throw to a group's member must exist before
+    // the group does. An encloser's index is always the higher, so a group
+    // first emits the groups of the pads below its members that unwind into
+    // them.
+    std::vector<std::vector<size_t>> inner(groups.size());
+    for (size_t k = 0; k < c.cleanups.size(); ++k)
+      if (int32_t p = c.cleanups[k].parent; p >= 0)
+        inner[group_of[static_cast<size_t>(p)]].push_back(group_of[k]);
+    std::vector<bool> emitted(groups.size(), false);
+    std::function<void(size_t)> emit_group;
+    auto emit_alone = [&](size_t k) {
+      const auto& cu = c.cleanups[k];
+      bool frame = cu.parent < 0;
+      JIT::CleanupPad pad(j, pad_of(cu.parent));
+      if (!pad.open(pads[k], "vm.scope.exc")) return;
+      // Read before the releases below, which nil the slot.
+      llvm::Value* site =
+          frame && cu.site_slot >= 0
+              ? j.extract_data(b.CreateLoad(j.valueType_, slots[cu.site_slot]))
+              : nullptr;
+      llvm::Value* ownDeferThrew = enter_pad(cu);
+      bool hush = frame && hush_frame;
+      if (hush) suppress(1);
+      for (int32_t s : chunk_release_order(c, cu.slot_lo, cu.slot_hi))
+        release_on_unwind(cu, s, chunk_slot_is_cell(c, s, cu.cells_before));
+      leave_pad(frame, hush, site);
+      if (cu.handler == Chunk::kNoHandler) return;  // pad dtor re-raises
       // A try scope classifies what it just cleaned up after: our own throw
       // enters the catch, a foreign one travels on to the encloser (interp's
       // catch(...) sees the same order — cleanup, then the decision). What
@@ -5738,12 +5900,20 @@ struct Lowering {
         b.SetInsertPoint(classifyBB);
       }
       j.emit_open_exception();
-      j.emit_classify_tail(frame ? nullptr
-                                 : pads[static_cast<size_t>(cu.parent)],
-                           depthSlot, slots[cu.caught_slot],
+      j.emit_classify_tail(pad_of(cu.parent), depthSlot, slots[cu.caught_slot],
                            blocks.at(static_cast<int32_t>(cu.handler)));
       if (passBB) b.SetInsertPoint(passBB);
-    }
+    };
+    emit_group = [&](size_t g) {
+      if (emitted[g]) return;
+      emitted[g] = true;
+      for (size_t in : inner[g]) emit_group(in);
+      if (shares_ladder(c.cleanups[groups[g].front()]))
+        emit_shared(groups[g]);
+      else
+        emit_alone(groups[g].front());
+    };
+    for (size_t g = 0; g < groups.size(); ++g) emit_group(g);
     if (stats) {
       std::string who = chunk_idx == 0         ? "main"
                         : c.multifn_name.empty() ? "fn"
