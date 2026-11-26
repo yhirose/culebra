@@ -49,11 +49,13 @@ export CULEBRA_AUDIO := env_var_or_default("CULEBRA_AUDIO", "off")
 # bare `./build/culebra prog.cul` in a shell is unaffected either way.
 export CULEBRA_REQUIRE_EXPLICIT_ENGINE := env_var_or_default("CULEBRA_REQUIRE_EXPLICIT_ENGINE", "1")
 
-# CULEBRA_PREBUILT_LLVM=1 links the static LLVM that misc/prebuilt_llvm.sh
-# fetches (optimized, where Homebrew's is -O0) instead of the one cmake finds.
-# Opt-in: it changes the include and library paths, so a build directory that
-# switches between the two recompiles every JIT translation unit.
-llvm_dir := if env_var_or_default("CULEBRA_PREBUILT_LLVM", "") == "1" { "-DLLVM_DIR=" + `misc/prebuilt_llvm.sh` } else { "" }
+# Where a prebuilt exists (misc/prebuilt_llvm.env lists the platforms), the JIT
+# links the optimized static LLVM that misc/prebuilt_llvm.sh fetches, not the
+# one cmake finds: Homebrew's static libraries are compiled at -O0.
+# CULEBRA_SYSTEM_LLVM=1 keeps the one cmake finds (a platform with no prebuilt
+# does, always). Switching a build directory between the two recompiles every
+# JIT translation unit.
+llvm_dir := if env_var_or_default("CULEBRA_SYSTEM_LLVM", "") != "1" { `misc/prebuilt_llvm.sh --flag` } else { "" }
 
 # List recipes
 default:

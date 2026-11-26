@@ -1,8 +1,14 @@
 #!/bin/bash
-# Prints the directory to pass as -DLLVM_DIR for the prebuilt static LLVM
-# pinned in misc/prebuilt_llvm.env, fetching it first when this machine does
-# not have it yet. Progress goes to stderr; stdout is the path alone, so
-# `-DLLVM_DIR=$(misc/prebuilt_llvm.sh)` works.
+# The prebuilt static LLVM for this machine, pinned in misc/prebuilt_llvm.env,
+# fetched first when this machine does not have it yet.
+#
+#   misc/prebuilt_llvm.sh          the directory to pass as -DLLVM_DIR; fails
+#                                  when this platform has no prebuilt
+#   misc/prebuilt_llvm.sh --flag   `-DLLVM_DIR=<that directory>`, or nothing at
+#                                  all when this platform has none (the
+#                                  justfile's one question about platforms)
+#
+# Progress goes to stderr; stdout is the answer alone.
 #
 # Why: Homebrew's llvm bottle compiles its static libraries at -O0, which
 # makes the JIT's own optimization and code generation about 1.6x slower
@@ -16,34 +22,58 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/prebuilt_llvm.env"
 
-if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
-  echo "prebuilt llvm: only macOS arm64 has one so far" >&2
+flag=0
+[[ "${1:-}" == --flag ]] && flag=1
+
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$os" in mingw*|msys*|cygwin*) os=windows ;; esac
+key="${os}_$(uname -m | tr '[:upper:]' '[:lower:]')"
+
+tag_var="PREBUILT_LLVM_${key}_TAG"
+asset_var="PREBUILT_LLVM_${key}_ASSET"
+sha_var="PREBUILT_LLVM_${key}_SHA256"
+if [[ -z "${!tag_var:-}" ]]; then
+  if (( flag )); then exit 0; fi
+  echo "prebuilt llvm: none for $key yet" >&2
   exit 1
 fi
+tag=${!tag_var}
+asset=${!asset_var:?$asset_var is missing in prebuilt_llvm.env}
+sha=${!sha_var:?$sha_var is missing in prebuilt_llvm.env}
 
-root="${CULEBRA_LLVM_CACHE:-${HOME:?}/Library/Caches/culebra/llvm}"
-dest="$root/$PREBUILT_LLVM_TAG"
+case "$os" in
+  darwin) default_root="${HOME:?}/Library/Caches/culebra/llvm" ;;
+  windows) default_root="${LOCALAPPDATA:-${HOME:?}/AppData/Local}/culebra/llvm" ;;
+  *) default_root="${XDG_CACHE_HOME:-${HOME:?}/.cache}/culebra/llvm" ;;
+esac
+root="${CULEBRA_LLVM_CACHE:-$default_root}"
+dest="$root/$tag-$key"
 marker="$dest/.sha256"
 
-if [[ "$(cat "$marker" 2>/dev/null)" != "$PREBUILT_LLVM_SHA256" ]]; then
+if [[ "$(cat "$marker" 2>/dev/null)" != "$sha" ]]; then
   mkdir -p "$root"
   # One fetcher at a time: worktrees start builds together.
-  lock="$root/.lock-$PREBUILT_LLVM_TAG"
+  lock="$root/.lock-$tag-$key"
   until mkdir "$lock" 2>/dev/null; do sleep 1; done
   tmp=$(mktemp -d "$root/.fetch.XXXXXX")
   trap 'rmdir "$lock" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 
-  if [[ "$(cat "$marker" 2>/dev/null)" != "$PREBUILT_LLVM_SHA256" ]]; then
-    url="https://github.com/yhirose/culebra-llvm/releases/download/$PREBUILT_LLVM_TAG/$PREBUILT_LLVM_ASSET"
+  if [[ "$(cat "$marker" 2>/dev/null)" != "$sha" ]]; then
+    url="https://github.com/yhirose/culebra-llvm/releases/download/$tag/$asset"
     echo "prebuilt llvm: fetching $url" >&2
     curl -fL --retry 3 -sS -o "$tmp/asset" "$url"
-    echo "$PREBUILT_LLVM_SHA256  $tmp/asset" | shasum -a 256 -c - >&2
+    if command -v sha256sum >/dev/null; then
+      echo "$sha  $tmp/asset" | sha256sum -c - >&2
+    else
+      echo "$sha  $tmp/asset" | shasum -a 256 -c - >&2
+    fi
     mkdir "$tmp/prefix"
     zstd -dc "$tmp/asset" | tar -x -C "$tmp/prefix"
-    echo "$PREBUILT_LLVM_SHA256" > "$tmp/prefix/.sha256"
+    echo "$sha" > "$tmp/prefix/.sha256"
     rm -rf "$dest"
     mv "$tmp/prefix" "$dest"
   fi
 fi
 
-echo "$dest/lib/cmake/llvm"
+dir="$dest/lib/cmake/llvm"
+if (( flag )); then echo "-DLLVM_DIR=$dir"; else echo "$dir"; fi
