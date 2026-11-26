@@ -351,14 +351,17 @@ that sends 14 bits takes finer steps, which `input.control(cc)` reads
 where a message's `value` holds 7.
 
 A wind controller plays one note at a time, and its breath (CC 2 on most) is
-how loud it is. One voice is enough: the note is a control that glides, and
-the breath is the envelope:
+how loud it is. A `Mono` plays one voice as a melody: the last note held
+sounds, a note on while another is held moves the pitch there with the
+envelopes going on as they are (legato), and letting go of it goes back to
+the note still held. `f.lag(t)` glides from note to note, and the breath is
+the envelope:
 
 ```culebra
 let {*} = Synth
 let breath = control("breath", 0.0).lag(0.02)
-let freq = hz(control("note", 60.0)).lag(0.05)
-let h = saw(freq).lowpass(300.0 + breath * 4000.0) * breath * 0.3 |> play(wait: false)
+let lead = Mono(|f| saw(f.lag(0.05)).lowpass(300.0 + breath * 4000.0) * breath * 0.3)
+let h = play(lead, wait: false)
 println(h.ends())  # => nil
 h.stop()
 ```
@@ -367,16 +370,17 @@ h.stop()
 # doctest: skip (it needs a MIDI device)
 for m in input.messages() {
   cond {
-    m.kind == "note_on" => h.set("note", m.note),
+    m.kind == "note_on" => lead.note_on(m.note),
+    m.kind == "note_off" => lead.note_off(m.note),
     m.kind == "cc" && m.cc == 2 => h.set("breath", input.control(2)),
     _ => {},
   }
 }
 ```
 
-A note on that only moves the pitch, with the note off left alone, plays
-legato (a wind controller sends the new note on first, as
-[`MIDI`](../stdlib.md#41-midi) says), and the breath alone ends the sound.
+A note off lets go only the gated envelopes, and this sound has none, so
+the breath alone ends it. With an `adsr` instead of the breath, a keyboard
+plays the same voice as a monophonic lead.
 
 ## A sound for a Kauai song
 

@@ -135,7 +135,7 @@ assert_close(backwards.ends(), 1.21, 1e-9)
 # start, none sounding past the next one's start, whatever order notes are
 # made in and however they are taken over.
 fn assert_voices_ordered(vs) {
-  for v in vs._voices {
+  for v in vs._track().voices {
     for k in 1..v.notes.size() {
       assert_true(v.notes[k - 1].start <= v.notes[k].start)
       assert_true(v.notes[k - 1].free <= v.notes[k].start)
@@ -159,7 +159,7 @@ let exact = Voices(1, |f| sine(f) * perc(0.0, 0.25, curve: 0.0))
 exact.note_on(69, at: 0.0)
 exact.note_on(76, at: 0.25)
 assert_close(exact.ends(), 0.5, 1e-9)
-assert_eq(exact._voices[0].notes.map(|n| n.start), [0.0, 0.25])
+assert_eq(exact._track().voices[0].notes.map(|n| n.start), [0.0, 0.25])
 assert_eq(render(exact, 0.5).size(), 22050)
 # A note off for before its note on lets nothing go.
 let early_off = Voices(1, |f| sine(f) * adsr(0.01, 0.05, 0.5, 0.1))
@@ -201,8 +201,8 @@ tie.note_on(50, at: 0.5)
 tie.note_on(60, at: 0.0)
 tie.note_on(60, at: 0.0)
 tie.note_off(60, at: 0.2)
-assert_close(tie._voices[0].notes[0].free, 0.3, 1e-9)
-assert_eq(tie._voices[1].notes[0].free, Math.inf)
+assert_close(tie._track().voices[0].notes[0].free, 0.3, 1e-9)
+assert_eq(tie._track().voices[1].notes[0].free, Math.inf)
 
 # A voice is silent until its first note, an envelope or not.
 let drone = Voices(1, |f| sine(f) * 0.2)
@@ -297,7 +297,7 @@ assert_close(peak(render(squared, 0.5), 0.4, 0.49), 0.25, 0.01)
 assert_throws("ValueError", || touched.note_on(60, velocity: 1.5), message: "Synth.Voices: velocity is a number from 0 to 1")
 assert_throws("ValueError", || touched.note_on(60, velocity: -0.1))
 # A velocity heard outside a Voices, or made outside its builder.
-let elsewhere = ("ValueError", "Synth.velocity: a note's velocity is heard only in what a Voices' builder returns, made there")
+let elsewhere = ("ValueError", "Synth.velocity: a note's velocity is heard only in what a Voices' or a Mono's builder returns, made there")
 assert_eq(caught(|| render(sine(440.0) * velocity(), 0.1)), elsewhere)
 let outside = velocity()
 let shared = Voices(2, |f| sine(f) * outside)

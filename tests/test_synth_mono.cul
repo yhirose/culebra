@@ -1,0 +1,165 @@
+# Synth's Mono: one voice played as a melody, the last note held sounding.
+# The harness keeps the device closed (CULEBRA_AUDIO=off).
+
+let {*} = Synth
+
+# The largest |x| in samples[from..to) of 44100 a second.
+fn peak(xs, from, to) {
+  xs.slice(Math.floor(from * 44100), Math.floor(to * 44100)).map(|x| Math.abs(x)).max()
+}
+
+# How strong a sine of `freq` is in samples[from..to), from its correlation.
+fn strength(xs, freq, from, to) {
+  let (a, b) = (Math.floor(from * 44100), Math.floor(to * 44100))
+  let w = 2.0 * Math.pi * freq / 44100.0
+  let re = iota(a, b).map(|i| xs[i] * Math.cos(w * i)).sum()
+  let im = iota(a, b).map(|i| xs[i] * Math.sin(w * i)).sum()
+  2.0 * Math.sqrt(re * re + im * im) / (b - a)
+}
+
+# An attack to 0.3 and a sustain at 0.18: a note started again peaks above
+# the sustain, one moved to (legato) does not.
+let lead = |legato| Mono(|f| sine(f) * adsr(0.01, 0.05, 0.6, 0.1) * 0.3, legato:)
+
+# A trill: 67 over a held 60, then back to 60 when 67 is let go.
+fn trill(m) {
+  m.note_on(60, at: 0.0)
+  m.note_on(67, at: 0.3)
+  m.note_off(67, at: 0.6)
+  m.note_off(60, at: 0.9)
+  m
+}
+
+let smooth = trill(lead(true))
+assert_close(smooth.ends(), 1.0, 1e-9)
+{
+  let s = render(smooth, 1.1)
+  assert_true(strength(s, hz(60), 0.1, 0.28) > 0.15)
+  assert_true(strength(s, hz(67), 0.1, 0.28) < 0.005)
+  assert_true(strength(s, hz(67), 0.35, 0.58) > 0.15)
+  assert_true(strength(s, hz(60), 0.35, 0.58) < 0.005)
+  # Back to the note still held.
+  assert_true(strength(s, hz(60), 0.65, 0.88) > 0.15)
+  # Legato: the envelope goes on at its sustain through each change.
+  assert_close(peak(s, 0.3, 0.34), 0.18, 0.01)
+  assert_close(peak(s, 0.6, 0.64), 0.18, 0.01)
+  # Let go at 0.9, silent after the release.
+  assert_true(peak(s, 1.01, 1.1) < 1e-6)
+}
+
+# Without legato each change starts the envelope again.
+{
+  let s = render(trill(lead(false)), 1.1)
+  assert_true(peak(s, 0.3, 0.34) > 0.27)
+  assert_true(peak(s, 0.6, 0.64) > 0.27)
+  assert_true(strength(s, hz(60), 0.65, 0.88) > 0.15)
+}
+
+# The notes held, in the order they went down: the last sounds.
+let fingers = lead(true)
+fingers.note_on(60, at: 0.0)
+fingers.note_on(64, at: 0.1)
+fingers.note_on(67, at: 0.2)
+assert_eq(fingers.held(), [60, 64, 67])
+assert_eq(fingers.ends(), Math.inf)
+# Letting go of one not sounding changes nothing heard; struck again, a note
+# goes to the end.
+fingers.note_off(64, at: 0.3)
+fingers.note_on(60, at: 0.4)
+assert_eq(fingers.held(), [67, 60])
+fingers.note_off(60, at: 0.5)
+fingers.note_off(67, at: 0.6)
+assert_eq(fingers.held(), [])
+{
+  let s = render(fingers, 0.7)
+  assert_true(strength(s, hz(67), 0.32, 0.38) > 0.15)
+  assert_true(strength(s, hz(60), 0.42, 0.48) > 0.15)
+  assert_true(strength(s, hz(67), 0.52, 0.58) > 0.15)
+}
+
+# Legato keeps the first note's velocity; started again, a note has its own.
+let touch = |legato| Mono(|f| sine(f) * adsr(0.001, 0.05, 1.0, 0.01) * velocity(), legato:)
+for (legato, heard) in [(true, 0.5), (false, 1.0)] {
+  let m = touch(legato)
+  m.note_on(60, at: 0.0, velocity: 0.5)
+  m.note_on(67, at: 0.2, velocity: 1.0)
+  assert_close(peak(render(m, 0.4), 0.3, 0.39), heard, 0.01)
+}
+
+# A sound that has ended on its own while held starts again at the next
+# note, legato or not.
+{
+  let struck = Mono(|f| sine(f) * perc(0.001, 0.1) * 0.5)
+  struck.note_on(60, at: 0.0)
+  struck.note_on(67, at: 0.3)
+  assert_true(strength(render(struck, 0.4), hz(67), 0.31, 0.35) > 0.1)
+}
+
+# Notes made in any order are heard in time order: the trill made backwards
+# renders as made forwards, and a sequence whose notes overlap is legato.
+{
+  let backwards = lead(true)
+  backwards.note_off(60, at: 0.9)
+  backwards.note_off(67, at: 0.6)
+  backwards.note_on(67, at: 0.3)
+  backwards.note_on(60, at: 0.0)
+  assert_eq(render(backwards, 1.1), render(smooth, 1.1))
+  let tied = lead(true)
+  tied.sequence([60, 64, 67], step: 0.3, len: 0.35)
+  let in_order = lead(true)
+  in_order.note_on(60, at: 0.0)
+  in_order.note_on(64, at: 0.3)
+  in_order.note_off(60, at: 0.35)
+  in_order.note_on(67, at: 0.6)
+  in_order.note_off(64, at: 0.65)
+  in_order.note_off(67, at: 0.95)
+  assert_eq(render(tied, 1.1), render(in_order, 1.1))
+  let s = render(tied, 1.1)
+  assert_close(peak(s, 0.3, 0.34), 0.18, 0.01)
+  assert_close(peak(s, 0.6, 0.64), 0.18, 0.01)
+  assert_true(strength(s, hz(67), 0.65, 0.88) > 0.15)
+}
+
+# Made while it plays: a note heard from the clock, and one made for before
+# notes already made there changes what follows it.
+{
+  let m = lead(true)
+  let h = m |> play(wait: false)
+  let base = h.now() + 1.0
+  m.note_on(60, at: base)
+  m.note_off(60, at: base + 0.4)
+  # 67 held over the end of 60: from there it sounds, legato, until let go.
+  m.note_on(67, at: base + 0.2)
+  m.note_off(67, at: base + 0.6)
+  let s = h.render(base + 0.8)
+  assert_true(strength(s, hz(60), base + 0.1, base + 0.18) > 0.15)
+  assert_true(strength(s, hz(67), base + 0.25, base + 0.38) > 0.15)
+  assert_true(strength(s, hz(67), base + 0.42, base + 0.58) > 0.15)
+  assert_close(peak(s, base + 0.2, base + 0.24), 0.18, 0.01)
+  h.stop()
+}
+
+# A Mono plays in a box as a Voices does.
+{
+  let box = Proxy()
+  let m = lead(true)
+  m.note_on(60, at: 0.0)
+  box.set(m)
+  box.stop()
+}
+
+# Mistakes.
+let m = lead(true)
+assert_throws("ValueError", || m.note_on(60, velocity: 1.5), message: "Synth.Mono: velocity is a number from 0 to 1")
+assert_throws("ValueError", || m.note_on(Math.nan), message: "Synth.Mono: note is a finite number")
+assert_throws("ValueError", || m.note_off(60, at: -1.0), message: "Synth.Mono: at is a finite number of seconds, 0 or more")
+assert_throws("ValueError", || m.sequence([60], step: 0.0), message: "Synth.Mono.sequence: step is more than 0")
+assert_throws("TypeError", || Mono(|f| 1.0), message: "type error: Synth.Mono's builder returns a SynthPart or a SynthEnvelope")
+{
+  let leaked = {mut f: nil}
+  Mono(fn (f) {
+    leaked.f = f
+    sine(f)
+  })
+  assert_throws("ValueError", || render(sine(leaked.f), 0.1), message: "Synth.Mono: a voice's freq is heard only in what its builder returns")
+}

@@ -10594,7 +10594,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`: `lo * (hi / lo) ^ (t / dur)`, the two of one sign and not 0 |
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`: a struck sound's envelope |
-| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays in a `Voices`, whose note off lets it go, and is a `ValueError` elsewhere |
+| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays in a `Voices` or a `Mono`, whose note off lets it go, and is a `ValueError` elsewhere |
 | `Synth.control(name, init, lo = nil, hi = nil)` | a value named `name`, `init` until the handle `play` gave sets it (kept to `lo..hi` when they are given, `init` among them); controls of one name in an expression are one value, and are made alike |
 | `Synth.velocity()` | in a `Voices` builder, the velocity of the voice's note, 0 to 1, as each note on sets it (below) |
 | `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression (or a `Voices`, below) played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped (a `Voices` until it is stopped, as notes may come). A sound that does not end on its own (an oscillator, a loop, a note still held) needs `secs` or `wait: false`, else `ValueError`. A bundle of two channels plays as the left and the right (below). With no device nothing sounds and it returns at once |
@@ -10751,7 +10751,7 @@ voice plays, from 0 to 1: a signal each note on sets as it sets `freq`, 1
 for a note given none. Multiplied into a carrier it makes a note played
 harder louder; into a modulator, brighter. Each call is a part of its own,
 and every one a voice's builder made is set by its notes. Made outside a
-builder, or heard outside a `Voices`, it is a `ValueError` where it is
+builder, or heard outside a `Voices` or a `Mono`, it is a `ValueError` where it is
 rendered or played.
 
 | Method of a `Voices` | Effect |
@@ -10777,6 +10777,40 @@ let piano = Voices(4, |f| sine(f, phase: sine(f * 2.0) * velocity() * 2.0) * ads
 piano.note_on(60, at: 0.0, velocity: 0.3)
 piano.note_on(64, at: 0.5, velocity: 0.9)
 println(render(piano, 1.0).size())  # => 44100
+```
+
+`Synth.Mono(builder, legato = true)` plays one voice as a melody, as a
+lead or a wind controller does: `builder(freq)` is called once, as for a
+`Voices`, and `velocity()` reads the note's velocity. The notes held are
+kept in the order they went down, and the last of them sounds. A note on
+while another is held moves the voice to it: with `legato` its envelopes go
+on as they are, at the first note's velocity, and without it they start
+again, the voice fading out over 5 ms first. Letting go of the note sounding
+goes back the same way to the last note still held, and letting go of the
+last lets the gated envelopes go. A sound that has ended on its own (a
+`perc`) starts again at the next note either way. A `freq.lag(t)` glides
+from note to note. Like a `Voices`, a `Mono` keeps its notes in time order,
+whatever order they are made in, and plays in `render`, `play` and a box.
+
+| Method of a `Mono` | Effect |
+| --- | --- |
+| `m.note_on(note, at = nil, velocity = 1.0)` | `note` held from `at` seconds (now when `nil`, as for a `Voices`), and sounding; `velocity` 0 to 1, else `ValueError` |
+| `m.note_off(note, at = nil)` | `note` let go from `at`; when it is the note sounding, the voice goes back to the last still held |
+| `m.held() -> Array` | the notes held after the latest note in time, in the order they went down: the last is sounding |
+| `m.sequence(notes: Array, step, len = nil, at = nil)` | as for a `Voices`; a `len` longer than `step` ties the notes (legato) |
+| `m.ends()` | when the notes made so far have ended, their tails included; `Math.inf` while one is held |
+| `m.now() -> Float` | where a note made now starts |
+
+```culebra
+let {sine, adsr, Mono, render} = Synth
+let lead = Mono(|f| sine(f.lag(0.03)) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
+lead.note_on(60, at: 0.0)
+lead.note_on(67, at: 0.5)  # over 60 held: the pitch glides there, legato
+println(lead.held())  # => [60, 67]
+lead.note_off(67, at: 1.0)  # back to 60
+lead.note_off(60, at: 1.5)
+println(lead.ends())  # => 1.7
+println(render(lead, 1.7).size())  # => 74970
 ```
 
 `Synth.Proxy(fade = 0.05)` is a box whose sound is replaced while it plays,

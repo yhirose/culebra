@@ -264,7 +264,10 @@
 # 382 since test_arith_runs.cul (a stretch of operators gives the same results
 # and errors whether its inputs are all Floats or not; 0.01 s under --vm,
 # 0.5 s under --jit).
-tests.cul 382
+# 383 since test_synth_mono.cul (Synth.Mono: legato and starting again, back
+# to the note still held, notes made out of time order, made while it plays;
+# 0.1 s under --vm, 1.0 s under --jit).
+tests.cul 383
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -469,7 +472,8 @@ ctest.entries 44
 # water, which skips: it needs a View).
 # 1264 since the Synth guide plays from a MIDI controller, in en and ja
 # (its two loops skip: they need a MIDI device).
-docs.blocks 1264
+# 1266 since Synth.Mono in stdlib, in en and ja (one voice as a melody).
+docs.blocks 1266
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

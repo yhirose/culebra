@@ -266,13 +266,13 @@ for m in input.messages() {
 
 コントローラーの値は、幅の128分の1ずつ段になって動き、音量やカットオフでは段ごとの跳びがクリックやジッパーのような音に聞こえます。`control`の後の`.lag(t)`は、段ごとの跳びを約`t`秒かけて滑らかにします。0.02から0.05なら、演奏に遅れずについていけて、段も聞こえません。14ビットで送るコントローラーは段が細かく、`input.control(cc)`はその精度で読みます。メッセージの`value`は7ビットです。
 
-ウインドコントローラーは1度に1音を吹き、息（多くはCC 2）が音の大きさです。声は1つで足ります。音高は滑るcontrolにし、息をそのままエンベロープにします。
+ウインドコントローラーは1度に1音を吹き、息（多くはCC 2）が音の大きさです。`Mono`は1つの声を旋律として鳴らします。最後に押さえた音が鳴り、押さえたまま次のノートオンが来るとエンベロープはそのままに音高だけをそこへ移し（レガート）、離すとまだ押さえている音へ戻ります。`f.lag(t)`で音から音へ滑らせ、息をそのままエンベロープにします。
 
 ```culebra
 let {*} = Synth
 let breath = control("breath", 0.0).lag(0.02)
-let freq = hz(control("note", 60.0)).lag(0.05)
-let h = saw(freq).lowpass(300.0 + breath * 4000.0) * breath * 0.3 |> play(wait: false)
+let lead = Mono(|f| saw(f.lag(0.05)).lowpass(300.0 + breath * 4000.0) * breath * 0.3)
+let h = play(lead, wait: false)
 println(h.ends())  # => nil
 h.stop()
 ```
@@ -281,14 +281,15 @@ h.stop()
 # doctest: skip (it needs a MIDI device)
 for m in input.messages() {
   cond {
-    m.kind == "note_on" => h.set("note", m.note),
+    m.kind == "note_on" => lead.note_on(m.note),
+    m.kind == "note_off" => lead.note_off(m.note),
     m.kind == "cc" && m.cc == 2 => h.set("breath", input.control(2)),
     _ => {},
   }
 }
 ```
 
-ノートオンで音高だけを動かしてノートオフには何もしなければ、レガートになり（[`MIDI`](../stdlib.ja.md#41-midi)にあるとおり、ウインドコントローラーは次の音のノートオンを先に送ります）、音を止めるのは息だけになります。
+ノートオフが離すのはゲートつきのエンベロープだけで、この音にはないので、音を止めるのは息だけです。息の代わりに`adsr`を使えば、同じ声をキーボードからモノフォニックのリードとして弾けます。
 
 ## Kauaiの曲の音
 

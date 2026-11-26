@@ -10109,7 +10109,7 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`。値は`lo * (hi / lo) ^ (t / dur)`で、2つは同じ符号で0でない |
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`。打つ音のエンベロープ |
-| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、ノートオフが離す`Voices`の中でだけ使え、それ以外では`ValueError` |
+| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、ノートオフが離す`Voices`か`Mono`の中でだけ使え、それ以外では`ValueError` |
 | `Synth.control(name, init, lo = nil, hi = nil)` | `name`という名前の値。`play`が返すハンドルで設定するまでは`init`（`lo`と`hi`があれば、その範囲に収め、`init`もその中）。1つの式の中の同じ名前の`control`は同じ値で、同じ引数で作る |
 | `Synth.velocity()` | `Voices`のビルダーの中で、声のノートのベロシティ（0〜1）。ノートオンのたびに設定される（下記） |
 | `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式（または下の`Voices`）を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける（`Voices`は、ノートが来うるので止めるまで）。自然に終わらない音（発振器、ループ、押さえたままのノート）は`secs`か`wait: false`が要り、なければ`ValueError`。2チャンネルの束は左右で鳴る（下の説明）。デバイスがなければ、鳴らさずにすぐ戻る |
@@ -10255,7 +10255,7 @@ println(render(noise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)).size())  
 ベロシティを渡さないノートでは1です。キャリアに掛ければ強く弾くほど大きく、
 モジュレーターに掛ければ明るくなります。呼ぶたびに別の部品になり、声の
 ビルダーが作ったものはすべて、その声のノートで設定されます。ビルダーの外で
-作ったものや、`Voices`の外で鳴らすものは、`render`や`play`の時点で
+作ったものや、`Voices`と`Mono`の外で鳴らすものは、`render`や`play`の時点で
 `ValueError`です。
 
 | `Voices`のメソッド | 動作 |
@@ -10281,6 +10281,39 @@ let piano = Voices(4, |f| sine(f, phase: sine(f * 2.0) * velocity() * 2.0) * ads
 piano.note_on(60, at: 0.0, velocity: 0.3)
 piano.note_on(64, at: 0.5, velocity: 0.9)
 println(render(piano, 1.0).size())  # => 44100
+```
+
+`Synth.Mono(builder, legato = true)`は、リードやウインドコントローラーのように、
+1つの声を旋律として鳴らします。`builder(freq)`は`Voices`と同じく呼ばれ（1度だけ）、
+`velocity()`はノートのベロシティを読みます。押さえている音を押した順に持ち、
+最後の音が鳴ります。押さえたまま次のノートオンが来ると、声はその音へ移ります。
+`legato`ならエンベロープはそのまま続き、ベロシティも最初の音のままです。
+`legato: false`なら、声を5 msでフェードアウトしてからエンベロープを始め直します。
+鳴っている音を離すと、同じやり方で、まだ押さえている最後の音へ戻り、最後の音を
+離すと、ゲートつきのエンベロープを離します。ひとりでに終わった音（`perc`）は、
+どちらでも次のノートで始め直します。`freq.lag(t)`は音から音へ滑ります。
+`Voices`と同じく、作った順にかかわらずノートを時刻の順に持ち、`render`、`play`、
+箱で鳴らせます。
+
+| `Mono`のメソッド | 動作 |
+| --- | --- |
+| `m.note_on(note, at = nil, velocity = 1.0)` | `note`を`at`秒から押さえて鳴らす（`nil`なら`Voices`と同じくいま）。`velocity`は0〜1、それ以外は`ValueError` |
+| `m.note_off(note, at = nil)` | `note`を`at`から離す。鳴っている音なら、まだ押さえている最後の音へ戻る |
+| `m.held() -> Array` | 時刻がいちばん遅いノートの後に押さえている音を、押した順に。最後の音が鳴っている |
+| `m.sequence(notes: Array, step, len = nil, at = nil)` | `Voices`と同じ。`len`が`step`より長ければ音がつながる（レガート） |
+| `m.ends()` | それまでに作ったノートが、余韻を含めて終わる時刻。押さえたままの音があれば`Math.inf` |
+| `m.now() -> Float` | いま作るノートが始まる時刻 |
+
+```culebra
+let {sine, adsr, Mono, render} = Synth
+let lead = Mono(|f| sine(f.lag(0.03)) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
+lead.note_on(60, at: 0.0)
+lead.note_on(67, at: 0.5)  # 60を押さえたまま：音高が滑って移る（レガート）
+println(lead.held())  # => [60, 67]
+lead.note_off(67, at: 1.0)  # 60へ戻る
+lead.note_off(60, at: 1.5)
+println(lead.ends())  # => 1.7
+println(render(lead, 1.7).size())  # => 74970
 ```
 
 `Synth.Proxy(fade = 0.05)`は、鳴らしたまま音を入れ替える箱で、ほかの式が読む

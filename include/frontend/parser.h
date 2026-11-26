@@ -1378,7 +1378,7 @@ inline bool is_stdlib_type_name(std::string_view name) {
       "PEG",       "Path",     "PriorityQueue", "Range",        "Regex",
       "Screen",    "SemanticValues", "Set",     "Song",         "Sound",
       "Sprite",    "StateMachine", "StringLike", "Stringer",    "SynthEnvelope",
-      "SynthHandle", "SynthPart", "SynthProxy", "SynthSignal", "SynthVoices", "Value",
+      "SynthHandle", "SynthMono", "SynthNoteTrack", "SynthNotes", "SynthPart", "SynthProxy", "SynthSignal", "SynthVoices", "Value",
       "WsResult",  "ZipArchive"};
   static_assert(std::ranges::is_sorted(kNames));
   return std::ranges::binary_search(kNames, name);

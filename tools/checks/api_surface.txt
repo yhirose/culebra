@@ -1266,6 +1266,12 @@ v.note_off(note, at = nil)
 v.sequence(notes: Array, step, len = nil, at = nil)
 v.ends()
 v.now() -> Float
+m.note_on(note, at = nil, velocity = 1.0)
+m.note_off(note, at = nil)
+m.held() -> Array
+m.sequence(notes: Array, step, len = nil, at = nil)
+m.ends()
+m.now() -> Float
 box.set(expr)
 box.play()
 box.stop()
