@@ -531,4 +531,6 @@ languages.samples 130
 # the presets kept, 0.4 s) and test_serve.cul (the engine over the page's
 # WebSocket: the patch, the notes played told back, presets, the settings
 # kept, 0.3 s).
-examples.suites 59
+# 60 with examples/midi-latency's test_onset.cul (the click and the tone found
+# in made-up recordings whose latency is known, 0.05 s).
+examples.suites 60

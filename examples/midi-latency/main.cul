@@ -1,0 +1,79 @@
+# MIDI latency: how long from a key going down to its sound, measured with
+# the microphone. Put the microphone by the keyboard, turn the speaker up,
+# and strike a key firmly ten times, a second or so apart. The microphone
+# hears the key's click and then the tone played for it; the distance
+# between the two is the latency, from the key to the speaker. The
+# microphone's own delay is in both, so it drops out.
+#
+#   culebra examples/midi-latency/main.cul [input name] [period in seconds]
+#
+# The input is the first whose name contains the name given (the first there
+# is without one), and the period is the device's that Audio.latency asks
+# for (0.003 without one, as the FM Synth asks).
+
+import onset from './onset.cul'
+
+let RATE = 44100
+let FREQ = 2000.0  # the tone: a sine, which the analysis tells from a click
+let TAPS = 10
+let AFTER = 0.3  # how long a note on is recorded for before it is analysed
+
+let ms = |secs| "{Math.round(secs * 10000.0) / 10.0} ms"
+
+let name = Sys.argv.empty() ? nil : Sys.argv[0]
+Audio.latency(Sys.argv.size() > 1 ? to_float(Sys.argv[1]) : 0.003)
+
+let port = MIDI.inputs().find(|p| name == nil || p.name.contains(name))
+if port == nil {
+  println(name == nil ? "no MIDI input" : "no MIDI input named {name}")
+  Sys.exit(1)
+}
+let input = MIDI.Input.new(port.id)
+
+let mic = Audio.Capture.new(RATE)
+mic.start()
+if !mic.ready() {
+  println("no microphone available")
+  Sys.exit(1)
+}
+
+let {sine, control, play} = Synth
+let h = sine(FREQ) * control("gate", 0.0) * 0.5 |> play(wait: false)
+println("{port.name}, device period {ms(Audio.latency())}")
+println("strike a key firmly {TAPS} times, a second or so apart")
+
+mut heard = []   # samples since the last tap was analysed, the last second
+mut taken = nil  # the note on being measured: when it came, was set, is due
+mut found = []
+while found.size() < TAPS {
+  input.wait(0.005)
+  for m in input.read() {
+    if m.kind == "note_on" && taken == nil {
+      h.set("gate", 1.0)
+      let now = Time.monotonic()
+      taken = {came: m.at, set: now, due: now + AFTER}
+    } else if m.kind == "note_off" {
+      h.set("gate", 0.0)
+    }
+  }
+  heard.extend(mic.read())
+  let size = heard.size()
+  heard = heard.slice(size - RATE, size) if size > 2 * RATE
+  if taken != nil && Time.monotonic() >= taken.due {
+    h.set("gate", 0.0)
+    let secs = onset.latency(heard, FREQ, RATE)
+    if secs == nil {
+      println("  no click and tone heard: strike harder, or the speaker louder")
+    } else {
+      found.push(secs)
+      println("  {found.size()}: {ms(secs)} (message to sound set {ms(taken.set - taken.came)})")
+    }
+    taken = nil
+    heard = []
+  }
+}
+h.stop()
+mic.stop()
+
+found.sort()
+println("median {ms(found[TAPS / 2])}, from {ms(found[0])} to {ms(found[TAPS - 1])}")

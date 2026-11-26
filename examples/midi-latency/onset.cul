@@ -1,0 +1,65 @@
+# Where two sounds start in one recording: a key's click, and the tone the
+# program played for that key. The distance between them is the latency
+# from the key to the sound. The microphone's own delay is in both, so it
+# drops out.
+
+# Analysed a millisecond at a time.
+let WINDOW_SECS = 0.001
+# A tone is heard once it has held this many windows: a click is gone by then.
+let HOLD = 8
+# The click is looked for within this long before the tone.
+let CLICK_SECS = 0.1
+
+# How much of a sine at `freq` the `n` samples from `from` hold (Goertzel):
+# about its amplitude, so a full sine is about 1.
+fn tone_level(samples, from, n, freq, rate) {
+  let c = 2.0 * Math.cos(2.0 * Math.pi * freq / rate)
+  mut s1 = 0.0
+  mut s2 = 0.0
+  for i in from..from + n {
+    let s0 = samples[i] + c * s1 - s2
+    s2 = s1
+    s1 = s0
+  }
+  Math.sqrt(Math.max(s1 * s1 + s2 * s2 - c * s1 * s2, 0.0)) * 2.0 / n
+}
+
+# The sample where the tone at `freq` starts: the first window of the first
+# run of HOLD windows at more than half its loudest. nil when there is none.
+fn tone_at(samples, freq, rate) {
+  let n = Math.round(WINDOW_SECS * rate)
+  let windows = samples.size() / n
+  let levels = iota(windows).map(|w| tone_level(samples, w * n, n, freq, rate))
+  return nil if levels.size() < HOLD
+  let floor = levels.max() / 2.0
+  mut run = 0
+  for w, level in levels.enumerate() {
+    run = level > floor ? run + 1 : 0
+    return (w - HOLD + 1) * n if run == HOLD
+  }
+  nil
+}
+
+# The sample where the click before `tone` starts: the first in the
+# CLICK_SECS before it louder than four times the quietest millisecond
+# there, and than 0.02. nil when there is none.
+fn click_before(samples, tone, rate) {
+  let n = Math.round(WINDOW_SECS * rate)
+  let start = Math.max(tone - Math.round(CLICK_SECS * rate), 0)
+  let peak = |w| samples.slice(w, w + n).map(|x| Math.abs(x)).max()
+  let peaks = iota((tone - start) / n).map(|k| peak(start + k * n))
+  let quiet = peaks.empty() ? 0.0 : peaks.min()
+  let threshold = Math.max(quiet * 4.0, 0.02)
+  iota(start, tone).find(|i| Math.abs(samples[i]) > threshold)
+}
+
+# The seconds from the click to the tone at `freq` in `samples`, or nil when
+# either is missing.
+fn latency(samples, freq, rate) {
+  let tone = tone_at(samples, freq, rate)
+  return nil if tone == nil
+  let click = click_before(samples, tone, rate)
+  click == nil ? nil : to_float(tone - click) / rate
+}
+
+export {tone_at, click_before, latency}
