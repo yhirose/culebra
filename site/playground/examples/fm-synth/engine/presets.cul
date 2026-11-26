@@ -22,7 +22,7 @@ fn patch(
   feedback = 0.0,
   reverb = 20.0,
   breath_bright = 50.0,
-  glide = 0.03,
+  glide = 0.015,
   volume = 75.0,
   touch = 50.0,
 ) {
