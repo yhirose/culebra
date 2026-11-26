@@ -33,8 +33,11 @@ tag_var="PREBUILT_LLVM_${key}_TAG"
 asset_var="PREBUILT_LLVM_${key}_ASSET"
 sha_var="PREBUILT_LLVM_${key}_SHA256"
 if [[ -z "${!tag_var:-}" ]]; then
-  if (( flag )); then exit 0; fi
-  echo "prebuilt llvm: none for $key yet" >&2
+  # A job that must have one (CULEBRA_REQUIRE_PREBUILT_LLVM=1: CI and the
+  # release on a platform that has a prebuilt) fails here, not by quietly
+  # linking the -O0 LLVM it was meant to leave.
+  if (( flag )) && [[ "${CULEBRA_REQUIRE_PREBUILT_LLVM:-}" != 1 ]]; then exit 0; fi
+  echo "prebuilt llvm: none for $key (misc/prebuilt_llvm.env)" >&2
   exit 1
 fi
 tag=${!tag_var}
@@ -47,10 +50,19 @@ case "$os" in
   *) default_root="${XDG_CACHE_HOME:-${HOME:?}/.cache}/culebra/llvm" ;;
 esac
 root="${CULEBRA_LLVM_CACHE:-$default_root}"
+# cmake takes the path from here, and in a MSYS shell a Windows path with
+# backslashes (LOCALAPPDATA's) is read as escapes: C:/Users/..., not C:\Users\...
+if [[ "$os" == windows ]] && command -v cygpath >/dev/null; then
+  root=$(cygpath -m "$root")
+fi
 dest="$root/$tag-$key"
 marker="$dest/.sha256"
 
 if [[ "$(cat "$marker" 2>/dev/null)" != "$sha" ]]; then
+  command -v zstd >/dev/null || {
+    echo "prebuilt llvm: zstd is needed to unpack it (MSYS2: pacman -S mingw-w64-ucrt-x86_64-zstd)" >&2
+    exit 1
+  }
   mkdir -p "$root"
   # One fetcher at a time: worktrees start builds together.
   lock="$root/.lock-$tag-$key"

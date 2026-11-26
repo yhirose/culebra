@@ -396,6 +396,14 @@ check-native-entry-door:
 check-runner-pins:
     tools/checks/check_runner_pins.sh
 
+# A key misspelt in misc/prebuilt_llvm.env is not an error to the fetcher: that
+# platform just has no prebuilt, and links the -O0 LLVM it was meant to leave.
+[group("test")]
+[doc("Verify misc/prebuilt_llvm.env names known platforms with all three fields")]
+check-prebuilt-llvm-env:
+    tools/checks/check_prebuilt_llvm_env.sh
+    tools/checks/check_prebuilt_llvm_env_test.sh >/dev/null
+
 # The Llama namespace is built against one llama.cpp release, and the wrapper
 # that drives it is tagged with the release it was tested against.
 [group("test")]
@@ -434,7 +442,7 @@ check-docs-cpp:
 # well under a second once the grammar-blob tool and the Audio.Graph bench are
 # ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-gc-pin-door check-exit-hook-door check-value-equal-door check-value-order-door check-key-name-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-gc-pin-door check-exit-hook-door check-value-equal-door check-value-order-door check-key-name-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions check-prebuilt-llvm-env
 
 # The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D, audio,
 # Webview or Llama), built as a release is (-O3, LTO). Its own dir: the JIT

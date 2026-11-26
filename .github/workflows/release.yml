@@ -85,6 +85,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     env:
+      CULEBRA_REQUIRE_PREBUILT_LLVM: "1"
       # The 7 GB runner swaps compiling >2 LLVM-header-heavy TUs (~3 GB each).
       CULEBRA_BUILD_JOBS: "2"
       CCACHE_DIR: ${{ github.workspace }}/.ccache

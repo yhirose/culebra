@@ -722,6 +722,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     env:
+      # Fail, not link Homebrew's -O0 LLVM, if misc/prebuilt_llvm.env loses
+      # this platform (the same on every macOS job and the release).
+      CULEBRA_REQUIRE_PREBUILT_LLVM: "1"
       # The 7 GB macOS runner swaps when compiling >2 LLVM-header-heavy TUs
       # (~3 GB each) at once — cap `just build`'s `make -j` to 2 (cuts
       # ~64 min → ~18).
@@ -846,6 +849,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 40
     env:
+      CULEBRA_REQUIRE_PREBUILT_LLVM: "1"
       CULEBRA_BUILD_JOBS: "2"
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -1056,6 +1060,7 @@ jobs:
     runs-on: macos-15  # release.yml's runner (see macos-arm64 there)
     timeout-minutes: 60
     env:
+      CULEBRA_REQUIRE_PREBUILT_LLVM: "1"
       # Deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT — CMake's own macOS
       # default is this job's subject, the way it is the Linux job's.
       CCACHE_DIR: ${{ github.workspace }}/.ccache
