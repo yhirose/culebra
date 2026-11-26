@@ -6679,7 +6679,7 @@ given even if the script lets go of the handle before `present()`.
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | open a render-to-texture the 2D calls paint into, and close it |
 | `view.render_target(w, h, supersample = 1) -> Texture` | a texture the scene renders into from a second camera (below) |
 | `tex.width()` / `tex.height() -> Float` | size in pixels |
-| `tex.filter(name) -> Texture` | sampling: `"point"` (pixel art, a LUT's exact cells), `"bilinear"`, `"trilinear"` (mipmapped), `"point_mipmap"` (mipmapped, but a magnified texel stays a sharp square: dots up close, averaged colour far away). A name it does not know is logged and the filter is unchanged |
+| `tex.filter(name) -> Texture` | sampling: `"point"` (pixel art, a LUT's exact cells), `"bilinear"`, `"trilinear"` (mipmapped), `"point_mipmap"` (mipmapped, but a magnified texel stays a sharp square: dots up close, averaged colour far away), `"point_coverage"` (as `"point_mipmap"`, but a pixel on a texel edge takes each side by the share of the pixel it covers, so an edge slides across the pixels as the camera moves instead of jumping one and back). A name it does not know is logged and the filter is unchanged |
 | `tex.wrap(name) -> Texture` | past the edge: `"repeat"`, `"clamp"`, `"mirror"` |
 
 The sizes `checker`, `grain`, `canvas` and `render_target` take follow the

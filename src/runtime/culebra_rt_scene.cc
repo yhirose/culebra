@@ -181,6 +181,7 @@ uniform sampler2D detailMap;
 uniform float detailStrength;   // 0 = no detail texture
 uniform float detailMasked;     // 1: texture0's alpha is the detail's strength, not coverage
 uniform float lodBias;          // log2 of a supersampled pass's factor, else 0
+uniform float texelCover;       // 1: texture0 is filtered "point_coverage"
 uniform mat4 lightVP0;
 uniform mat4 lightVP1;
 uniform vec4 colDiffuse;
@@ -224,10 +225,36 @@ float pcf(sampler2D sm, vec3 proj, float bias) {
       lit += (proj.z - bias > unpackDepth(texture(sm, proj.xy + vec2(x, y) * texel))) ? 0.0 : 1.0;
   return lit / 9.0;
 }
+// "point_coverage" at one mip level: inside a texel its colour as is, across
+// an edge a ramp one pixel (`span`, in uv) wide, so each side counts by the
+// share of the pixel it covers. A pixel wider than a texel reads bilinear.
+vec4 coverLevel(vec2 uv, float level, vec2 span) {
+  vec2 size = vec2(textureSize(texture0, int(level)));
+  vec2 p = uv * size;
+  vec2 w = max(min(span * size, vec2(1.0)), vec2(1e-6));
+  vec2 edge = floor(p + 0.5);
+  p = edge + clamp((p - edge) / w, -0.5, 0.5);
+  return textureLod(texture0, p / size, level);
+}
+// The levels the hardware would pick (lodBias included), each read by
+// coverLevel and blended as trilinear blends them.
+vec4 baseColor(vec2 uv) {
+  if (texelCover < 0.5) return texture(texture0, uv, lodBias);
+  vec2 dx = dFdx(uv), dy = dFdy(uv);
+  vec2 size0 = vec2(textureSize(texture0, 0));
+  float rho = max(length(dx * size0), length(dy * size0));
+  float top = floor(log2(max(size0.x, size0.y)));
+  float lod = clamp(log2(max(rho, 1e-8)) + lodBias, 0.0, top);
+  float l0 = floor(lod);
+  vec2 span = abs(dx) + abs(dy);
+  vec4 c = coverLevel(uv, l0, span);
+  float t = lod - l0;
+  return t > 0.0 ? mix(c, coverLevel(uv, l0 + 1.0, span), t) : c;
+}
 void main() {
   // texture0 defaults to a 1x1 white texture, so untextured shapes are
   // unaffected (white * colour). A material can swap in a real texture.
-  vec4 tex = texture(texture0, fragUV, lodBias);
+  vec4 tex = baseColor(fragUV);
   float cover = opacity * (detailMasked > 0.5 ? 1.0 : tex.a);
   // Added about grey 128, so a pattern averaging it — as its far mip levels
   // do — leaves the colour's mean alone.
@@ -678,6 +705,9 @@ class Texture : public std::enable_shared_from_this<Texture> {
   // flip is folded into wherever the texture is read: the material's UV
   // transform (emit) and a sprite's source rectangle. One flag, every reader.
   bool flip_v = false;
+  // filter("point_coverage"): the lit shader blends a texel edge by the share
+  // of the pixel each side covers (texelCover), on linear sampling.
+  bool coverage = false;
   uint64_t epoch = gl_epoch();
   // A UV transform (scale.xy, offset.zw) that reads this texture upright:
   // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo). The flip composes with the
@@ -707,9 +737,12 @@ class Texture : public std::enable_shared_from_this<Texture> {
   double height() const { return tex.height; }
   // Sampling: "point" for pixel art and a LUT's exact cells, "bilinear",
   // "trilinear" (mipmapped — built here if the upload skipped them),
-  // "point_mipmap" (mipmapped; magnified texels stay sharp).
+  // "point_mipmap" (mipmapped; magnified texels stay sharp), "point_coverage"
+  // (point_mipmap whose texel edges are blended by the share of the pixel
+  // each side covers, so an edge slides instead of jumping a pixel).
   Texture& filter(std::string name) {
     if (!live()) return *this;
+    bool cover = false;
     if (name == "point") SetTextureFilter(tex, TEXTURE_FILTER_POINT);
     else if (name == "bilinear") SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
     else if (name == "trilinear") { ensure_mipmaps(); SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR); }
@@ -718,7 +751,18 @@ class Texture : public std::enable_shared_from_this<Texture> {
       rlTextureParameters(tex.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_NEAREST);
       rlTextureParameters(tex.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_NEAREST_MIP_LINEAR);
     }
-    else TraceLog(LOG_ERROR, "Scene: filter('%s') names no mode (point / bilinear / trilinear / point_mipmap) — unchanged.", name.c_str());
+    else if (name == "point_coverage") {
+      // The shader picks the level and where in it to sample; the hardware
+      // only interpolates between the two texels it lands between.
+      ensure_mipmaps();
+      SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR);
+      cover = true;
+    }
+    else {
+      TraceLog(LOG_ERROR, "Scene: filter('%s') names no mode (point / bilinear / trilinear / point_mipmap / point_coverage) — unchanged.", name.c_str());
+      return *this;
+    }
+    coverage = cover;
     return *this;
   }
   void ensure_mipmaps() { if (tex.mipmaps <= 1) GenTextureMipmaps(&tex); }
@@ -1728,6 +1772,7 @@ class View {
     loc_cutoff_ = GetShaderLocation(lit_, "cutoff");
     loc_emissive_ = GetShaderLocation(lit_, "emissive");
     loc_unlit_ = GetShaderLocation(lit_, "unlit");
+    loc_texcover_ = GetShaderLocation(lit_, "texelCover");
     loc_uv_ = GetShaderLocation(lit_, "uvXform");
     loc_nstrength_ = GetShaderLocation(lit_, "normalStrength");
     loc_lodbias_ = GetShaderLocation(lit_, "lodBias");
@@ -2391,14 +2436,15 @@ class View {
   // white, the way a stale mesh draws nothing (see Texture).
   void draw_surface(const DrawItem& it, const RenderCtx& ctx, float fogon, float alpha_mode) {
     const Material* m = it.mat;
-    Texture2D tex = white_;
-    if (m && m->tex && m->tex->live()) tex = m->tex->tex;
+    const Texture* t = m && m->tex && m->tex->live() ? m->tex.get() : nullptr;
+    Texture2D tex = t ? t->tex : white_;
     float metallic = m ? m->metallic : 0.0f, roughness = m ? m->roughness : 0.85f;
     float cutoff = m ? m->cutoff : 0.0f;
     float unlit = m && m->unlit_ ? 1.0f : 0.0f;
+    float texcover = t && t->coverage ? 1.0f : 0.0f;
     Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
     Vector4 uv = m ? m->uv_ : Vector4{1, 1, 0, 0};
-    if (m && m->tex && m->tex->live()) uv = m->tex->upright(uv);
+    if (t) uv = t->upright(uv);
     bool nm = m && m->normal && m->normal->live();
     float nstrength = nm ? m->normal_strength : 0.0f;
     mat_.maps[MATERIAL_MAP_DIFFUSE].color = m ? m->color : it.node->color;
@@ -2423,6 +2469,7 @@ class View {
     SetShaderValue(lit_, loc_cutoff_, &cutoff, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_emissive_, &emissive, SHADER_UNIFORM_VEC3);
     SetShaderValue(lit_, loc_unlit_, &unlit, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_texcover_, &texcover, SHADER_UNIFORM_FLOAT);
     set_finish(lit_, lit_fin_, fogon, alpha_mode, it.opacity / 255.0f);
     SetShaderValue(lit_, loc_uv_, &uv, SHADER_UNIFORM_VEC4);
     DrawMesh(*it.node->mesh_for(ctx), mat_, it.draw);
@@ -2941,7 +2988,7 @@ class View {
   int loc_lvp0_ = 0, loc_lvp1_ = 0;
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
-  int loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0;
+  int loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_texcover_ = 0;
   int loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
   int loc_detail_uv_ = 0, loc_detail_k_ = 0, loc_detail_masked_ = 0;
   bool culling_ = true;

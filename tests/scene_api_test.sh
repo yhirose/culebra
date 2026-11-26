@@ -645,8 +645,9 @@ EOF
 # horizon. Near the camera a texel is many pixels wide, so every pixel of the
 # bottom row is pure black or white under point_mipmap (trilinear blends the
 # edges); at the far row texels are sub-pixel, so point_mipmap averages them
-# to grey while plain point still aliases to pure pixels. Post pass off, so
-# nothing blurs the rows.
+# to grey while plain point still aliases to pure pixels. point_coverage keeps
+# the near texels pure but for the one pixel at each edge, and averages far.
+# Post pass off, so nothing blurs the rows.
 cat > scene_pmip.cul <<'EOF'
 let view = Scene.View.new(160, 120, "scene pmip")
 view.background(20, 24, 30)
@@ -666,8 +667,9 @@ view.camera(0.0, 3.0, 0.0, 0.0, 0.0, 20.0, 0.0, 1.0, 0.0, 60.0)
 view.post_process(false)
 Canvas.init(160, 120)
 # pure (black or white) pixels in one row of the frame drawn with `mode`
+# (nil: the filter as it was left)
 fn pure_in_rows(mode) {
-  tex.filter(mode)
+  tex.filter(mode) if mode != nil
   view.render_3d()
   view.screenshot("pmip_{mode}.png")
   view.present()
@@ -686,12 +688,15 @@ fn pure_in_rows(mode) {
 let (pm_near, pm_far) = pure_in_rows("point_mipmap")
 let (tri_near, tri_far) = pure_in_rows("trilinear")
 let (pt_near, pt_far) = pure_in_rows("point")
+let (pc_near, pc_far) = pure_in_rows("point_coverage")
+println("point_coverage near {pc_near} far {pc_far}")
 println("near stays sharp: {pm_near == 160 && pt_near == 160 && tri_near < 160}")
 println("far is averaged: {pm_far == 0 && tri_far == 0 && pt_far > 0}")
+println("coverage greys only the edges: {pc_near >= 120 && pc_near < 160 && pc_far == 0}")
 tex.filter("no_such_mode")
 view.render_3d()
 view.present()
-println("unknown name keeps the last filter: {pure_in_rows("point_mipmap")[0] == 160}")
+println("unknown name keeps the last filter: {pure_in_rows(nil)[0] == pc_near}")
 EOF
 
 # texture_mips: a red full-size level and green levels below it. The plane is
@@ -1623,8 +1628,8 @@ run_pair() {
 run_pair nosun "unlit pixels not magenta: 0"
 echo "OK: with no sun() call an unlit surface keeps its colour"
 run_pair pmip "near stays sharp: true" "far is averaged: true" \
-  "unknown name keeps the last filter: true"
-echo "OK: point_mipmap keeps near texels sharp and averages far ones"
+  "coverage greys only the edges: true" "unknown name keeps the last filter: true"
+echo "OK: point_mipmap keeps near texels sharp and averages far ones; point_coverage greys only their edges"
 run_pair tmips "size 64.0x64.0" "near is level 0: true" "far is a given level: true" \
   "ValueError: view.texture_mips: levels is empty" \
   "ValueError: view.texture_mips: a 64x64 texture has 7 levels down to 1x1, got 3" \
