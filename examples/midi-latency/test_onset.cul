@@ -1,5 +1,6 @@
 # The latency found in made-up recordings whose answer is known: a quiet
-# hiss, a key's click (a burst of noise dying in 3 ms) and, `delay` seconds
+# hiss, a key's click (a burst of noise falling by e each millisecond) and,
+# `delay` seconds
 # after the click, a tone. The click is the louder, as it is with the
 # microphone at the keys and the speaker further off.
 
@@ -8,16 +9,16 @@ import onset from './onset.cul'
 let RATE = 44100
 let FREQ = 2000.0
 
-# Half a second: the click at 0.2 s, the tone `delay` after it, both left
-# out when nil.
-fn recording(delay, click: Bool = true, tone: Bool = true) {
+# Half a second: the click at 0.2 s, and the tone `delay` after it unless
+# `tone` is false.
+fn recording(delay, tone: Bool = true) {
   Random.seed(7)
   let at = Math.round(0.2 * RATE)
   let starts = at + Math.round(delay * RATE)
   iota(Math.round(0.5 * RATE)).map(fn (i) {
     let hiss = Random.uniform(-0.003, 0.003)
     let k = i - at
-    let burst = click && k >= 0
+    let burst = k >= 0
       ? Random.uniform(-0.9, 0.9) * Math.exp(-k / (0.001 * RATE))
       : 0.0
     let sine = tone && i >= starts
@@ -38,5 +39,5 @@ for delay in [0.004, 0.0123, 0.03] {
 assert_eq(onset.latency(recording(0.01, tone: false), FREQ, RATE), nil)
 
 # The tone found alone starts where it starts, and not at the click.
-let s = recording(0.02, click: true)
+let s = recording(0.02)
 assert_close(to_float(onset.tone_at(s, FREQ, RATE)) / RATE, 0.22, 0.0011)
