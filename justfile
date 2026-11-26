@@ -49,6 +49,12 @@ export CULEBRA_AUDIO := env_var_or_default("CULEBRA_AUDIO", "off")
 # bare `./build/culebra prog.cul` in a shell is unaffected either way.
 export CULEBRA_REQUIRE_EXPLICIT_ENGINE := env_var_or_default("CULEBRA_REQUIRE_EXPLICIT_ENGINE", "1")
 
+# CULEBRA_PREBUILT_LLVM=1 links the static LLVM that misc/prebuilt_llvm.sh
+# fetches (optimized, where Homebrew's is -O0) instead of the one cmake finds.
+# Opt-in: it changes the include and library paths, so a build directory that
+# switches between the two recompiles every JIT translation unit.
+llvm_dir := if env_var_or_default("CULEBRA_PREBUILT_LLVM", "") == "1" { "-DLLVM_DIR=" + `misc/prebuilt_llvm.sh` } else { "" }
+
 # List recipes
 default:
     @just --list
@@ -59,7 +65,7 @@ default:
 [group("build")]
 build *extra:
     mkdir -p build
-    cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON {{extra}} .. > /dev/null
+    cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON {{llvm_dir}} {{extra}} .. > /dev/null
     # make.log keeps the whole output: a parallel failure's own error line
     # sits far above the "Error 2" it ends on.
     cd build && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} 2>&1 | tee make.log
@@ -77,7 +83,7 @@ build *extra:
 dev *extra:
     @misc/gen_preambles.sh
     mkdir -p build-dev
-    cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_DEV_O1=ON {{extra}} .. > /dev/null
+    cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_DEV_O1=ON {{llvm_dir}} {{extra}} .. > /dev/null
     cd build-dev && {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # Gate build for `just test`: Release + JIT like `just build`, but LTO OFF.
@@ -91,7 +97,7 @@ dev *extra:
 [group("build")]
 build-gate *extra:
     mkdir -p build-gate
-    cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
+    cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{llvm_dir}} {{extra}} .. > /dev/null
     cd build-gate && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} 2>&1 | tee make.log
 
 # Compile and link separately: ccache passes a combined compile+link command
