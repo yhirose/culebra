@@ -10299,7 +10299,7 @@ println(render(piano, 1.0).size())  # => 44100
 | --- | --- |
 | `m.note_on(note, at = nil, velocity = 1.0)` | `note`を`at`秒から押さえて鳴らす（`nil`なら`Voices`と同じくいま）。`velocity`は0〜1、それ以外は`ValueError` |
 | `m.note_off(note, at = nil)` | `note`を`at`から離す。鳴っている音なら、まだ押さえている最後の音へ戻る |
-| `m.held() -> Array` | 時刻がいちばん遅いノートの後に押さえている音を、押した順に。最後の音が鳴っている |
+| `m.held() -> Array` | 時刻がいちばん遅いノートの後に押さえている音を、押した順に。最後に押した音が鳴るので、最後の要素が声の受け持つ音。音が消えても（`perc`）、押さえているあいだは残る |
 | `m.sequence(notes: Array, step, len = nil, at = nil)` | `Voices`と同じ。`len`が`step`より長ければ音がつながる（レガート） |
 | `m.ends()` | それまでに作ったノートが、余韻を含めて終わる時刻。押さえたままの音があれば`Math.inf` |
 | `m.now() -> Float` | いま作るノートが始まる時刻 |

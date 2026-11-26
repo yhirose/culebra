@@ -10796,7 +10796,7 @@ whatever order they are made in, and plays in `render`, `play` and a box.
 | --- | --- |
 | `m.note_on(note, at = nil, velocity = 1.0)` | `note` held from `at` seconds (now when `nil`, as for a `Voices`), and sounding; `velocity` 0 to 1, else `ValueError` |
 | `m.note_off(note, at = nil)` | `note` let go from `at`; when it is the note sounding, the voice goes back to the last still held |
-| `m.held() -> Array` | the notes held after the latest note in time, in the order they went down: the last is sounding |
+| `m.held() -> Array` | the notes held after the latest note in time, in the order they went down: the last is the voice's note, as the last note held sounds. A note stays while held even when its sound has died away (a `perc`) |
 | `m.sequence(notes: Array, step, len = nil, at = nil)` | as for a `Voices`; a `len` longer than `step` ties the notes (legato) |
 | `m.ends()` | when the notes made so far have ended, their tails included; `Math.inf` while one is held |
 | `m.now() -> Float` | where a note made now starts |

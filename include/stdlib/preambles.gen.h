@@ -7431,7 +7431,7 @@ let _synth_module = fn () {
       self._press({kind: "off", note: note, at: @_t.time(at)})
     }
     # The notes held after the latest in time, in the order they went down:
-    # the last is sounding.
+    # the last is the voice's note, even once its sound has died away.
     held() {
       self._last().held.map(|h| h.note)
     }
