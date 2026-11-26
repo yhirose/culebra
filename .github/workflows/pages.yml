@@ -34,11 +34,11 @@ permissions:
   id-token: write  # OIDC token deploy-pages exchanges for the upload
 
 jobs:
-  deploy:
+  # Upload and deploy are separate jobs, as in GitHub's own Pages workflow:
+  # deploy-pages looks the artifact up by name, and a lookup fractions of a
+  # second after the upload in the same job can find none (seen 2026-11-26).
+  build:
     runs-on: ubuntu-24.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       # No submodules: site/ is prebuilt output plus static assets.
       - uses: actions/checkout@v5
@@ -49,5 +49,12 @@ jobs:
         with:
           path: site
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - id: deploy
         uses: actions/deploy-pages@v4
