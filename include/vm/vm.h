@@ -5747,6 +5747,13 @@ class Compiler {
     } else if (const Binding* b = lookup_at(head)) {
       named = b->decl_field_classes;
     }
+    return field_class_in(named, field);
+  }
+
+  // The class `field`'s annotation names in a class's table of them
+  // (culebra::class_field_classes_of), or empty.
+  static std::string_view field_class_in(
+      const culebra::ClassFieldClasses* named, std::string_view field) {
     if (!named) return {};
     auto it = named->find(field);
     return it == named->end() ? std::string_view{} : it->second;
@@ -11203,11 +11210,25 @@ class Compiler {
   // One operator token's worth of the question, shared between a fold's
   // per-operator scan and the compound-assignment classification (`v += e`
   // splices the same dunder `v = v + e` would).
+  //
+  // While a round decides, a question asked outside any member body is
+  // answered through the round's cache (round_splices_, SpliceCache's
+  // comment); one asked from inside a member body asks for real, holding
+  // whatever recursion guards it holds.
   bool operator_token_splice_ok(std::string_view t, const peg::Ast& cls,
                                 std::string_view class_name,
                                 const std::vector<std::string>* layout) {
-    return dunder_splice_ok(splice_dunder_for_token(t), 1, cls, class_name,
-                            layout);
+    auto ask = [&] {
+      return dunder_splice_ok(splice_dunder_for_token(t), 1, cls, class_name,
+                              layout);
+    };
+    if (!round_splices_ || !member_frames_.empty()) return ask();
+    auto key = std::pair{&cls, t};
+    if (auto it = round_splices_->find(key); it != round_splices_->end())
+      return it->second;
+    bool ok = ask();
+    round_splices_->emplace(key, ok);
+    return ok;
   }
 
   // The splice-able operator tokens, and the dunder each one reaches; empty
@@ -11220,6 +11241,9 @@ class Compiler {
     if (t == "+") return dunder_for_op(Op::Add);
     if (t == "-") return dunder_for_op(Op::Sub);
     if (t == "*") return dunder_for_op(Op::Mul);
+    if (t == "/") return dunder_for_op(Op::Div);
+    if (t == "%") return dunder_for_op(Op::Mod);
+    if (t == "@") return dunder_for_op(Op::MatMul);
     return {};
   }
 
@@ -11420,38 +11444,40 @@ class Compiler {
   // nullptr when there is no such set to consult (a spliced dunder's
   // parameter, whose body is not a statement list).
   //
-  // `splices` memoises "does this token splice on this class", which a
-  // round asks over and over: once per operator of every statement, for
-  // every candidate, on every pass. The answer cannot change while a round
-  // runs — nothing compiles in between, and `inline_body_ok` asks the
+  // A round's SpliceCache memoises "does this token splice on this class",
+  // which a round asks over and over: once per operator of every statement,
+  // for every candidate, on every pass. The answer cannot change while a
+  // round runs — nothing compiles in between, and `inline_body_ok` asks the
   // member alone — but it is NOT a property of
   // `(class, token)` in general: a re-entrant ask returns false from
   // `inline_body_ok`'s recursion guard. The cache is therefore owned by
-  // the round and reached only from the round's own walks; a nested walk
-  // (a spliced dunder's parameter) leaves it null and asks for real,
-  // holding whatever guards it holds.
+  // the round (round_splices_) and consulted only for a question asked
+  // outside any member body; a nested question (a spliced dunder's
+  // parameter, a member's own body) asks for real, holding whatever guards
+  // it holds.
   using SpliceCache = std::map<std::pair<const peg::Ast*, std::string_view>,
                                bool>;
+  // A round's candidates still assumed eligible, by name, with the
+  // declaration that binds each: an occurrence after that declaration
+  // means the candidate (run_class_named). The walks (ValueWalk::live) and
+  // the lookahead (assumed_runs_) read this one map.
+  struct AssumedRun {
+    const peg::Ast* cls;
+    const peg::Ast* decl;
+  };
+  using AssumedRuns = std::map<std::string, AssumedRun, std::less<>>;
   struct ValueWalk {
     std::string_view name;
     const peg::Ast* cls;
     std::string_view class_name;
     const std::vector<std::string>* layout;
     bool writes_ok;
-    const std::map<std::string, const peg::Ast*, std::less<>>* live = nullptr;
-    SpliceCache* splices = nullptr;
+    const AssumedRuns* live = nullptr;
   };
 
-  // `operator_token_splice_ok` for one walk, through that round's cache.
+  // `operator_token_splice_ok` for one walk's class.
   bool operator_splices(std::string_view t, const ValueWalk& w) {
-    if (!w.splices)
-      return operator_token_splice_ok(t, *w.cls, w.class_name, w.layout);
-    auto key = std::pair{w.cls, t};
-    if (auto it = w.splices->find(key); it != w.splices->end())
-      return it->second;
-    bool ok = operator_token_splice_ok(t, *w.cls, w.class_name, w.layout);
-    w.splices->emplace(key, ok);
-    return ok;
+    return operator_token_splice_ok(t, *w.cls, w.class_name, w.layout);
   }
 
   // `fold_operators_splice_ok` for one walk, likewise.
@@ -11498,19 +11524,48 @@ class Compiler {
     return std::nullopt;
   }
 
-  // `name` itself, or an expression value_run_ok proves a run rooted at it:
-  // what a spliced parameter (an operator's operand, a method's argument)
-  // may be bound to when it takes a run.
+  // An expression a spliced parameter (an operator's operand, a method's
+  // argument) may be bound to as a run, with every occurrence of `name` in
+  // it consumed: `name` itself, one value_run_ok roots at it, or an
+  // operator over ANOTHER run of the same class whose operands take `name`
+  // the same way (`w2 / k @ name`) — compile_spliced_operand binds each of
+  // those operands by the same test when it compiles the fold.
   bool is_run_of_name(const peg::Ast& e, const ValueWalk& w) {
     using namespace peg::udl;
-    return (e.tag == "IDENTIFIER"_ && e.token == w.name) || value_run_ok(e, w);
+    if ((e.tag == "IDENTIFIER"_ && e.token == w.name) ||
+        name_chain_run_ok(e, w))
+      return true;
+    // The head rooted at `name` itself (run_at_name's fold), or another run
+    // of the class that consumes `name` where it holds one. The first is
+    // asked by name because a spliced parameter has no binding for the
+    // lookahead to find.
+    auto head_ok = [&](const peg::Ast& h) {
+      return run_rooted_at_name(h, w) || run_of_class_ok(h, w);
+    };
+    if ((e.tag == "ADDITIVE"_ || e.tag == "MULTIPLICATIVE"_) &&
+        e.nodes.size() >= 3)
+      return head_ok(*e.nodes[0]) && fold_operators_splice_ok(e, 1, w) &&
+             fold_operands_ok(e, w);
+    if (e.tag == "UNARY_MINUS"_ && e.nodes.size() >= 2)
+      return head_ok(*e.nodes[1]) &&
+             neg_operator_splice_ok(*w.cls, w.class_name, w.layout);
+    return false;
   }
 
-  // `name` itself, or a chain rooted at it that ends in a run.
+  // A run of `name`'s class, per the lookahead, in which `name` is either
+  // absent or consumed (is_run_of_name): what may head an operator whose
+  // operands take `name`, and what may head another binding's step.
+  bool run_of_class_ok(const peg::Ast& x, const ValueWalk& w) {
+    return unboxed_value_expr_class(x) == w.cls &&
+           (value_ref_ok(x, w) || is_run_of_name(x, w));
+  }
+
+  // `name` itself, a chain rooted at it that ends in a run, or an operator
+  // rooted at it in turn (`name * 0.5` heading `name * 0.5 + v`).
   bool run_rooted_at_name(const peg::Ast& node, const ValueWalk& w) {
     using namespace peg::udl;
     return (node.tag == "IDENTIFIER"_ && node.token == w.name) ||
-           name_chain_run_ok(node, w);
+           value_run_ok(node, w);
   }
 
   // `name.m(...)…` ending in a run of `name`'s own class, with every
@@ -11539,13 +11594,11 @@ class Compiler {
   // IDENTIFIER case: this whole check is what DECIDES whether `v`'s
   // binding is ever marked unboxed at all, so at the point it runs there is
   // no Binding yet for `chain_resolves_to_class`'s `lookup(ast.token)` to
-  // find (found live: `v = v + g*DT` always declined until this split —
-  // `fold_resolves_to_class`'s own lookahead on operand[0] asked the same
-  // question the wrong way, through a binding that could not exist yet).
-  // Anything else — a fresh construction of the SAME class, or a chain
-  // rooted somewhere `v` is not — never reaches that IDENTIFIER case in the
-  // first place (a CALL node is not one, and any OTHER identifier already
-  // has a real binding by the time this runs), so asking there is safe.
+  // find. Anything else — a fresh construction of the SAME class, or an
+  // expression rooted somewhere `v` is not — is asked through the
+  // lookahead (unboxed_value_expr_class): another candidate of the same
+  // round answers from the round's assumption (run_class_named), and every
+  // other identifier already has a binding by the time this runs.
   //
   // That answers for the RHS's own shape, not for `v` below the top of it:
   // an argument of the construction or of a step is an ordinary position,
@@ -11557,7 +11610,11 @@ class Compiler {
     if (auto rooted = run_at_name(rhs, w)) return *rooted;
     if (unboxed_value_expr_class(rhs) != w.cls) return false;
     if (!fold) return value_ref_ok(rhs, w);
-    return value_ref_ok(*rhs.nodes[0], w) && fold_operands_ok(rhs, w);
+    // The class was settled just above; the head and the operands are each
+    // asked how they hold `name`.
+    const peg::Ast& head = *rhs.nodes[0];
+    return (value_ref_ok(head, w) || is_run_of_name(head, w)) &&
+           fold_operands_ok(rhs, w);
   }
 
   // The generalised `receiver_refs_stay_unboxed`, for a `let [mut]` local
@@ -11596,19 +11653,20 @@ class Compiler {
     if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
       return true;  // a member name, not a value reference
     // A postfix chain whose head is already an unboxed run — `name` itself
-    // (`name.x`, `name.len()`, try_inline_name_chain's consumer), or
-    // an expression value_run_ok roots at it (`(name + g).len()`,
-    // `(-name).x`, `(name.rot(o)).x`: try_inline_run_headed_chain's). Either way chain_end answering Scalar is
-    // the same condition the lookahead checks before committing, so the
-    // run ends consumed, never escaping the splice. A head that is a fold
-    // over OTHER names, or one whose operators cannot splice, simply isn't
-    // this shape and falls through to the generic walk below (where a bare
+    // (`name.x`, `name.len()`, try_inline_name_chain's consumer), or an
+    // expression is_run_of_name consumes `name` in (`(name + g).len()`,
+    // `(-name).x`, `(name.rot(o)).x`, `(w2 + name).len()`:
+    // try_inline_run_headed_chain's). Either way chain_end answering Scalar
+    // is the same condition the lookahead checks before committing, so the
+    // run ends consumed, never escaping the splice. A head that consumes no
+    // `name` that way falls through to the generic walk below (where a bare
     // occurrence of `name` inside it declines as usual).
     if (node.tag == "CALL"_ && !node.nodes.empty()) {
       bool head_is_run =
           (node.nodes[0]->tag == "IDENTIFIER"_ &&
            node.nodes[0]->token == w.name) ||
-          (node.nodes.size() >= 2 && value_run_ok(*node.nodes[0], w));
+          (node.nodes.size() >= 2 && node.nodes[0]->tag != "IDENTIFIER"_ &&
+           is_run_of_name(*node.nodes[0], w));
       if (head_is_run) {
         if (chain_end(node, 1, *w.cls, w.class_name, w.layout) !=
             ChainEnd::Scalar)
@@ -11805,7 +11863,7 @@ class Compiler {
     if (n == w.name) return w.cls;
     if (w.live) {
       auto it = w.live->find(n);
-      if (it != w.live->end()) return it->second;
+      if (it != w.live->end()) return it->second.cls;
     }
     const Binding* b = lookup_name(n);
     return b ? b->unboxed_class : nullptr;
@@ -11843,9 +11901,7 @@ class Compiler {
     const peg::Ast& head = *rhs.nodes[0];
     bool head_ok = head.tag == "IDENTIFIER"_
                        ? name_run_class(head.token, w) == w.cls
-                       : name_chain_run_ok(head, w) ||
-                             (chain_resolves_to_class(head) == w.cls &&
-                              value_ref_ok(head, w));
+                       : run_of_class_ok(head, w);
     return head_ok && fold_operators_splice_ok(rhs, 1, w) &&
            fold_operands_ok(rhs, w);
   }
@@ -11914,11 +11970,12 @@ class Compiler {
   }
 
   // An expression proven to be a run, compiled as whichever of the three
-  // top-level shapes it is (fold / negation / chain). Two callers, asking
-  // the same question about different expressions: a write's RHS (whose
+  // top-level shapes it is (fold / negation / chain). Its callers ask the
+  // same question about different expressions: a write's RHS (whose
   // eligibility `value_ref_ok` or the declaration's own check already
-  // settled) and an operator's own operand (`operand_stays_unboxed`). Both
-  // decided before calling, so this only dispatches — the `assert` pins
+  // settled), a spliced parameter's argument (splice_member_arg), and a
+  // fold's or negation's own operand[0] (compile_fold, compile_unary_minus).
+  // All decided before calling, so this only dispatches — the `assert` pins
   // that promise the way every other stage of this feature does at its own
   // emitting half.
   ExprResult compile_unboxed_value_expr(const peg::Ast& rhs) {
@@ -12206,8 +12263,23 @@ class Compiler {
     // it.
     PrecheckRound& round = rounds_[list];
     std::vector<ValueCandidate> cands;
-    std::map<std::string, const peg::Ast*, std::less<>> live;
-    std::set<std::string> seen, repeated;
+    // The candidates still assumed eligible, each from its own declaration
+    // on — what the walks (ValueWalk::live) and the lookahead
+    // (assumed_runs_) both read. A later candidate's declaration may lean on
+    // an earlier one (`let w2 = w + g`), so it is filled as the list is read.
+    AssumedRuns live;
+    SpliceCache splices;
+    struct RoundGuard {
+      Compiler& c;
+      const AssumedRuns* runs;
+      SpliceCache* splices;
+      ~RoundGuard() {
+        c.assumed_runs_ = runs;
+        c.round_splices_ = splices;
+      }
+    } round_guard{*this, std::exchange(assumed_runs_, &live),
+                  std::exchange(round_splices_, &splices)};
+    std::set<std::string> seen;
     for (size_t k = i; k < stmts.size(); k++) {
       auto c = value_candidate_at(stmts, k);
       if (!c) continue;
@@ -12215,20 +12287,20 @@ class Compiler {
       // tell apart — the same reason a shadow declines. Neither is
       // assumed, and neither is decided here.
       if (!seen.insert(c->name).second) {
-        repeated.insert(c->name);
+        live.erase(c->name);
         continue;
       }
       // One an earlier round of this same pass already answered keeps that
       // answer: it is what the bindings compiled since were classified
       // against.
       if (round.decided.contains(c->decl)) {
-        if (value_unboxed_.contains(c->decl)) live[c->name] = c->cls;
+        if (value_unboxed_.contains(c->decl))
+          live[c->name] = {c->cls, c->decl};
         continue;
       }
-      live[c->name] = c->cls;
+      live[c->name] = {c->cls, c->decl};
       cands.push_back(*c);
     }
-    for (const auto& n : repeated) live.erase(n);
     // An unboxed local is read in place from its home slots, so one that an
     // expression rebinds while an operand still holds it stays boxed.
     if (!cands.empty()) {
@@ -12243,14 +12315,15 @@ class Compiler {
         if (auto it = last_write.find(c.name); it != last_write.end() && it->second > c.index)
           live.erase(c.name);
     }
-    SpliceCache splices;
     for (bool changed = true; changed;) {
       changed = false;
       for (const auto& c : cands) {
         if (!live.contains(c.name)) continue;
-        ValueWalk w{c.name,      c.cls, c.class_name, c.layout,
-                    c.writes_ok, &live, &splices};
-        bool ok = true;
+        ValueWalk w{c.name, c.cls, c.class_name, c.layout, c.writes_ok, &live};
+        // Its own declaration first: one that leaned on a candidate dropped
+        // since no longer resolves to a run.
+        auto again = value_candidate_at(stmts, c.index);
+        bool ok = again && again->cls == c.cls;
         for (size_t j = c.index + 1; j < stmts.size() && ok; j++)
           if (!value_ref_ok(*stmts[j], w)) ok = false;
         if (!ok) {
@@ -12706,17 +12779,45 @@ class Compiler {
     // (Binding::unboxed_class) is a run as it stands — what lets
     // `v = v + g * DT` fold the same way a literal `C.new(...) + C.new(...)`
     // does, `v` playing operand[0]'s role (spec §15.3).
-    if (ast.tag == "IDENTIFIER"_) {
-      const Binding* b = lookup_at(ast);
-      return (b && b->unboxed_class) ? b->unboxed_class : nullptr;
-    }
+    if (ast.tag == "IDENTIFIER"_) return run_class_named(ast);
     // A chain on such a local that ends still holding its class
     // (`v.rot(w)`): the steps splice onto the local's run.
-    if (auto nc = name_chain(ast); nc && nc->end == ChainEnd::Run)
-      return nc->head.unboxed_class;
+    if (ast.tag == "CALL"_ && ast.nodes.size() >= 2 &&
+        ast.nodes[0]->tag == "IDENTIFIER"_ && ast.nodes[0]->token != "self")
+      if (const peg::Ast* cls = run_class_named(*ast.nodes[0])) {
+        auto vc = value_class_of(*cls);
+        return vc && chain_end(ast, 1, *cls, vc->name, vc->layout) ==
+                         ChainEnd::Run
+                   ? cls
+                   : nullptr;
+      }
     auto chain = construction_chain(ast);
     return chain && chain->end == ChainEnd::Run ? chain->cls : nullptr;
   }
+
+  // The flat `@value` class a bare name holds as a run, for the lookahead:
+  // a binding already proven unboxed (Binding::unboxed_class), or — while a
+  // whole-scope round is deciding — a candidate of that round the name
+  // means where it is written (assumed_runs_). A candidate's own walk
+  // (ValueWalk::live) asks the same of the occurrences it classifies; this
+  // is the same assumption for everything those walks and the candidates'
+  // own declarations ask through unboxed_value_expr_class, so a `let w2 =
+  // w + g` and a `w2 = w + g` can lean on a `w` decided in the same round.
+  // A member body being asked about (member_frames_) has names of its own
+  // and may come from another source, where a position means nothing here.
+  const peg::Ast* run_class_named(const peg::Ast& name) {
+    if (assumed_runs_ && member_frames_.empty())
+      if (auto it = assumed_runs_->find(name.token);
+          it != assumed_runs_->end() &&
+          name.position >= it->second.decl->position + it->second.decl->length)
+        return it->second.cls;
+    const Binding* b = lookup_at(name);
+    return b ? b->unboxed_class : nullptr;
+  }
+  // The round deciding now (precheck_value_bindings_at), for the lookahead
+  // and operator_token_splice_ok; null outside one.
+  const AssumedRuns* assumed_runs_ = nullptr;
+  SpliceCache* round_splices_ = nullptr;
 
   // A postfix chain rooted at a local already proven unboxed
   // (Binding::unboxed_class), and how its steps end: the lookahead the Run
@@ -12861,15 +12962,20 @@ class Compiler {
   }
   // `dunder_for_op`: the special method an arithmetic opcode reaches on the
   // boxed path (`rt_runtime.inc.h`'s `_dispatch_arith_special`/`CUL_NUM_BINOP`),
-  // for the subset this inlines. Reflection (`3 * v` where only `v` has
-  // `__mul__`) is not attempted — only an LHS the compiler has already
-  // proven unboxed is a candidate, so a name-only match on the RHS side
-  // would need a symmetric analysis this does not build.
+  // for the subset this inlines. The left operand's own dunder answers
+  // first there, so an LHS the compiler has proven a run reaches exactly
+  // that method. Reflection (`3 * v`, reaching `v.__rmul__` or, for `+`
+  // and `*`, `v.__mul__`) is not attempted: which method answers depends
+  // on what the LEFT operand is at run time (a number, a Tensor, an object
+  // with its own `__mul__`), which nothing here knows statically.
   static std::string_view dunder_for_op(Op op) {
     switch (op) {
       case Op::Add: return "__add__";
       case Op::Sub: return "__sub__";
       case Op::Mul: return "__mul__";
+      case Op::Div: return "__div__";
+      case Op::Mod: return "__mod__";
+      case Op::MatMul: return "__matmul__";
       default: return {};
     }
   }
@@ -12925,7 +13031,9 @@ class Compiler {
   const peg::Ast* fold_resolves_to_class(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.nodes.size() < 3) return nullptr;
-    const peg::Ast* cls = chain_resolves_to_class(*ast.nodes[0]);
+    // operand[0] may itself be an operator (`p * 0.5 + v`): any of the three
+    // run shapes, compiled by compile_unboxed_value_expr.
+    const peg::Ast* cls = unboxed_value_expr_class(*ast.nodes[0]);
     if (!cls) return nullptr;
     auto vc = value_class_of(*cls);
     if (!vc) return nullptr;
@@ -12942,7 +13050,7 @@ class Compiler {
   const peg::Ast* unary_minus_resolves_to_class(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.nodes.size() < 2) return nullptr;
-    const peg::Ast* cls = chain_resolves_to_class(*ast.nodes[1]);
+    const peg::Ast* cls = unboxed_value_expr_class(*ast.nodes[1]);
     if (!cls) return nullptr;
     auto vc = value_class_of(*cls);
     if (!vc) return nullptr;
@@ -12981,9 +13089,8 @@ class Compiler {
         allow_trailing_class && ast.nodes.size() >= 3
             ? fold_resolves_to_class(ast)
             : nullptr;
-    auto acc = fold_class
-                   ? *try_inline_value_chain(*ast.nodes[0], ChainEnd::Run)
-                   : compile_expr(*ast.nodes[0]);
+    auto acc = fold_class ? compile_unboxed_value_expr(*ast.nodes[0])
+                          : compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
       auto op_tok = ast.nodes[i]->token;
       auto found = binary_op_for_token(op_tok);
@@ -13028,7 +13135,7 @@ class Compiler {
   ExprResult compile_unary_minus(const peg::Ast& ast,
                                  bool allow_trailing_class) {
     if (allow_trailing_class && unary_minus_resolves_to_class(ast)) {
-      auto r = *try_inline_value_chain(*ast.nodes[1], ChainEnd::Run);
+      auto r = compile_unboxed_value_expr(*ast.nodes[1]);
       auto out = try_inline_operator(ast, r, "__neg__", {});
       assert(out && "unary_minus_resolves_to_class's scan promised this");
       return *out;
@@ -13048,7 +13155,7 @@ class Compiler {
   // `C.new(...)` head. The head is asked and compiled through the same pair
   // a write's RHS is (unboxed_value_expr_class / compile_unboxed_value_expr),
   // which is what the walk (value_ref_ok's head_is_run, through
-  // value_run_ok) assumed: a fold/negation is only ever allowed to end its
+  // is_run_of_name) assumed: a fold/negation is only ever allowed to end its
   // own compile still holding the class (`allow_trailing_class=true`) when
   // this function has ALSO proven, before compiling anything, that whatever
   // postfix steps follow it can actually consume that. A bare name is
@@ -13176,8 +13283,14 @@ class Compiler {
                : fn_direct ? ExprResult{chunk_.fn_slot, false}
                : borrowed  ? read_borrowed_head(*ast.nodes[0], *borrowed)
                            : compile_expr(*ast.nodes[0]);
+    // The class the value in hand is promised to be, step by step: what the
+    // head's own declaration says of a field (`s.pos`), then what that
+    // class's declaration says of the next (`s.pos.x`) — the same promise
+    // `let p = s.pos; p.x` takes through a binding. Any other step forgets.
+    std::string_view promised;
     for (size_t i = nsfn ? 3 : 1; i < ast.nodes.size(); ++i) {
       const auto& post = *ast.nodes[i];
+      bool keeps_promise = false;
       if (post.original_tag == "ARGUMENTS"_) {
         // Only the head's own call reaches a callee the compiler can name —
         // `f()()` calls whatever the first call returned. A direct `fn(...)`
@@ -13206,13 +13319,21 @@ class Compiler {
         } else {
           res = compile_property_read(
               ast, post, res,
-              i == 1 ? declared_read_tag(*ast.nodes[0], post.token) : 0);
+              i == 1 ? declared_read_tag(*ast.nodes[0], post.token)
+                     : field_read_tag(culebra::class_field_types_of(promised),
+                                      post.token));
+          promised = i == 1 ? field_class_name(*ast.nodes[0], post.token)
+                            : field_class_in(
+                                  culebra::class_field_classes_of(promised),
+                                  post.token);
+          keeps_promise = true;
         }
       } else if (post.original_tag == "NONNULL"_) {
         StampGuard pos(*this, post);
         emit(Op::NilChk, res.slot);
       } else
         reject(post, "call chain");
+      if (!keeps_promise) promised = {};
     }
     if (!has_safe) return res;
     store_into(out, res, /*dst_is_fresh=*/true);

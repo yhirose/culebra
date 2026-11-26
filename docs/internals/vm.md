@@ -940,9 +940,13 @@ had built on the way.
 
 `v + g * DT` reaches `__add__`/`__mul__` on the boxed path, through the same
 runtime dispatch as any other arithmetic. When both are flat `@value`
-classes, `Op::Add`/`Sub`/`Mul`/`Neg` splice the dunder the same way a
-`.method()` step in §5.3.1's chain does — one class, one instance, one
-splice, still no object built.
+classes, `Op::Add`/`Sub`/`Mul`/`Div`/`Mod`/`MatMul`/`Neg` splice the
+dunder the same way a `.method()` step in §5.3.1's chain does — one class,
+one instance, one splice, still no object built. The left operand's own
+dunder is the one the boxed dispatch reaches first, so an operand[0]
+proven a run reaches exactly that method. A reflected `k * v` is not
+spliced: whether `v.__rmul__`, `v.__mul__` or something else answers it
+depends on what `k` is at run time, which nothing here knows.
 
 An operator fold (`ADDITIVE`/`MULTIPLICATIVE`, and `UNARY_MINUS` sized down
 to one operand) decides before compiling anything, not operand by operand:
@@ -1088,6 +1092,20 @@ desugared reassignment would. The declaration's own RHS accepts the same
 three shapes a write's does — a construction chain that ends in a run, a
 fold, or a negation — so `let d = C.new(...) + C.new(...)` persists the run
 §5.3.2 built, and `let d = C.new(...).len()` is an ordinary local. A
+fold's operand[0] may itself be any of the three (`p * 0.5 + v`).
+
+A declaration or a write may lean on another candidate of the same round
+(`let w2 = w + g`, `acc = acc + w2 @ w`): while a round decides, the
+lookahead answers a name with the round's own assumption
+(`assumed_runs_`, read through `run_class_named`) wherever the name
+occurs after that candidate's declaration, and each pass re-asks every
+candidate's own declaration, so one that leaned on a candidate since
+dropped drops with it. An operand that is itself an operator over another
+run of the class (`w2 / k @ name`) is a run the spliced parameter takes
+when every occurrence of `name` inside it is (`is_run_of_name`).
+Statement lists nested in the scope (a loop body) are decided later than
+the scope's own, so a `let` there does not count as a consumer of a run
+the scope is deciding. A
 plain `let` is the degenerate single-assignment case: the walk refuses to
 classify any write to it, so a later `v = …` — an ImmutableError today —
 declines the binding and the ordinary path keeps the identical error.
@@ -1433,7 +1451,9 @@ A class's declared field types are checked on every write
 *scalar* one — `Float`, `Long`, `Bool` — answers with one tag; every other
 checked annotation is `FieldType::Named`, its slot carrying the annotation
 (`culebra::TypeAnnotation`) the write is checked against, which answers
-no one tag and so gives a read nothing to compile against.
+no one tag and so gives a read nothing to compile against — but it names
+the class whose own fields the NEXT step reads (`field_class_in`),
+so `s.pos.x` is as typed as `let p = s.pos; p.x`.
 `Op::PropVal` carries it in `d`: the compiler fills it when the receiver
 is a name whose declared class declares that field with a scalar type —
 a parameter or a local whose annotation names the class, `self` inside

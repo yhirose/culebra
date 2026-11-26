@@ -1,0 +1,140 @@
+# The shapes a physics step is written in keep a flat `@value` run unboxed
+# (docs/internals/vm.md §5.3.2, §5.3.3):
+#
+# - a `let` or a write built from another local of the same list that is
+#   itself still being decided (`let w2 = w + g`, `acc = acc + w2 @ w`),
+# - `/`, `%` and `@`, which splice their dunders as `+`, `-` and `*` do,
+# - an operator whose left operand is itself one (`p * 0.5 + v * dt`),
+#
+# and a typed field's class is followed down a chain (`s.pos.x` reads as
+# `let p = s.pos; p.x` does).
+#
+# Each case is checked against the same arithmetic on plain Floats, or
+# against what the boxed path answers. tests/resolve_shape_test.sh holds the
+# bytecode side.
+#
+# Run: ./build/culebra tests/test_value_steps.cul
+#      ./build/culebra --jit tests/test_value_steps.cul
+
+@value
+class V2 {
+  x: Float
+  y: Float
+
+  new(@x, @y) {}
+
+  __add__(o) {
+    V2(self.x + o.x, self.y + o.y)
+  }
+
+  __mul__(k) {
+    V2(self.x * k, self.y * k)
+  }
+
+  __div__(k) {
+    V2(self.x / k, self.y / k)
+  }
+
+  __mod__(k) {
+    V2(self.x % k, self.y % k)
+  }
+
+  __matmul__(o) {
+    V2(self.x * o.x, self.y * o.y)
+  }
+}
+
+# --- a `let` from another local of the same list ---
+
+fn chained(n) {
+  let w = V2(1.0, 2.0)
+  let w2 = w + V2(w.y, 0.5)
+  mut acc = V2(0.0, 0.0)
+  for _ in 0..n {
+    acc = acc + w2 / 4.0 @ w % 3.0
+  }
+  (acc.x, acc.y)
+}
+fn chained_floats(n) {
+  let (wx, wy) = (1.0, 2.0)
+  let (vx, vy) = (wx + wy, wy + 0.5)
+  mut (ax, ay) = (0.0, 0.0)
+  for _ in 0..n {
+    ax = ax + vx / 4.0 * wx % 3.0
+    ay = ay + vy / 4.0 * wy % 3.0
+  }
+  (ax, ay)
+}
+assert_eq(chained(3), chained_floats(3))
+
+# --- a write whose RHS starts at another local of the same list ---
+
+fn written(n) {
+  let w = V2(0.5, 0.25)
+  mut v = V2(0.0, 0.0)
+  for _ in 0..n {
+    v = w + v * 0.5
+  }
+  (v.x, v.y)
+}
+assert_eq(written(3), (0.875, 0.4375))
+
+# --- an operator whose left operand is itself an operator ---
+
+fn damped(n) {
+  mut p = V2(1.0, 2.0)
+  let v = V2(0.5, 0.25)
+  for _ in 0..n {
+    p = p * 0.5 + v * 0.1
+  }
+  (p / 2.0 + v).x
+}
+fn damped_floats(n) {
+  mut (px, py) = (1.0, 2.0)
+  for _ in 0..n {
+    px = px * 0.5 + 0.5 * 0.1
+    py = py * 0.5 + 0.25 * 0.1
+  }
+  px / 2.0 + 0.5
+}
+assert_eq(damped(4), damped_floats(4))
+
+# --- the second local falls with the first: still right, boxed ---
+
+# `w` read bare by a comparison stays boxed, and `w2`, built from it, falls
+# with it when its own declaration is asked again.
+fn falls() {
+  let w = V2(1.0, 2.0)
+  let w2 = w + V2(1.0, 1.0)
+  (w == nil ? 0.0 : w.x) + w2.y
+}
+assert_eq(falls(), 4.0)
+
+# --- a typed field's class, followed down a chain ---
+
+class S {
+  pos: V2
+  new() {}
+}
+fn read_chain(s: S) {
+  s.pos.x + s.pos.y
+}
+fn read_let(s: S) {
+  let p = s.pos
+  p.x + p.y
+}
+let s = S()
+let nil_chain = try {
+  read_chain(s)
+} catch e {
+  e.message
+}
+let nil_let = try {
+  read_let(s)
+} catch e {
+  e.message
+}
+assert_eq(nil_chain, nil_let)
+s.pos = V2(1.5, 2.5)
+assert_eq(read_chain(s), 4.0)
+assert_eq(read_let(s), 4.0)

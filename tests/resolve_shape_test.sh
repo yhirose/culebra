@@ -128,6 +128,75 @@ fn f() {
 println(f())' \
 ' ValueBox ' 1
 
+# A `let` built from another local of the same list, and an operand that is
+# itself an operator over another run, stay runs; `/`, `%` and `@` splice.
+# The step on lines 11-14 builds no instance and dispatches no operator.
+steps='@value
+class V2 {
+  x: Float
+  y: Float
+  new(@x, @y) {}
+  __add__(o) { V2(self.x + o.x, self.y + o.y) }
+  __div__(k) { V2(self.x / k, self.y / k) }
+  __mod__(k) { V2(self.x % k, self.y % k) }
+  __matmul__(o) { V2(self.x * o.x, self.y * o.y) }
+}
+fn ok() {
+  let w = V2(1.0, 2.0)
+  let w2 = w + V2(w.y, 0.5)
+  (w2 / 4.0 @ w % 3.0 + w2).x
+}'
+check "a step built from runs of one list stays unboxed" "$steps" \
+  ' (ValueBox|Call|CallM|Add|Div|Mod|MatMul) .*; 1[1-4]:' 0
+
+# A write whose RHS starts at another local of the same list.
+check "a write headed by another local stays unboxed" \
+'@value
+class V2 {
+  x: Float
+  new(@x) {}
+  __add__(o) { V2(self.x + o.x) }
+  __mul__(k) { V2(self.x * k) }
+}
+fn f(n) {
+  let w = V2(0.5)
+  mut v = V2(0.0)
+  for _ in 0..n { v = w + v * 0.5 }
+  v.x
+}' \
+' (ValueBox|Call|CallM|Add|Mul) .*; 1[0-3]:' 0
+
+# An operator whose left operand is itself an operator splices too.
+check "an operator headed by an operator stays unboxed" \
+'@value
+class V2 {
+  x: Float
+  new(@x) {}
+  __add__(o) { V2(self.x + o.x) }
+  __mul__(k) { V2(self.x * k) }
+}
+fn f(n) {
+  mut p = V2(1.0)
+  let v = V2(0.5)
+  for _ in 0..n { p = p * 0.5 + v * 0.1 }
+  p.x
+}' \
+' (ValueBox|Call|CallM|Add|Mul) .*; 1[0-3]:' 0
+
+# A typed field whose annotation names a class with typed fields reads
+# those fields typed down the chain, as through a `let`.
+check "a typed field's class follows a chain" \
+'class P {
+  x: Float
+  new(@x) {}
+}
+class S {
+  pos: P
+  new(@pos) {}
+}
+fn f(s: S) { s.pos.x }' \
+'PropVal .* 7 +; 9:.*\.x' 1
+
 # ...and a class the layout rules refuse keeps the boxed form. Without this
 # the check above would pass just as well if everything unboxed.
 check "nested-@value field stays boxed" \
