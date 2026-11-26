@@ -105,16 +105,16 @@ fn keys(patch) {
   })
 }
 
-# The wind controller's one voice: its pitch glides to each note, the breath
-# is the carriers' envelope, and opens the modulators by `breath_bright`.
+# The wind controller's one voice: the last finger held sounds, the pitch
+# gliding there; the breath is the carriers' envelope, and opens the
+# modulators by `breath_bright`.
 fn wind(patch) {
   let breath = control("breath", 0.0).lag(BREATH_LAG)
   let bright = control("breath_bright", controls(patch).breath_bright)
   let opened = bright * (breath - 1.0) + 1.0
   let alg = ALGORITHMS[patch.algorithm]
   let env_of = |i| alg.carriers.contains(i) ? breath : opened
-  let freq = control("wind_hz", 440.0).lag(patch.glide)
-  voice(patch, freq, WIND_GAIN, env_of, vibrato())
+  Mono(|f| voice(patch, f.lag(patch.glide), WIND_GAIN, env_of, vibrato()))
 }
 
 # What is heard: the keyboard's and the wind controller's sounds (two

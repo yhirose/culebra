@@ -48,10 +48,10 @@ class Instrument {
     @sustained = Set()  # the keys up that the pedal holds
     @pedal_down = false
     @velocities = {}    # how hard each key sounding was played, by note
-    @fingers = []  # the wind controller's notes held, the last one sounding
+    @wind = nil
     @blown = 0.0
     self._build_keys()
-    @wind_box.set(fm.wind(patch))
+    self._build_wind()
     @out.set(fm.output(patch, @keys_box, @wind_box))
     @out.play()
   }
@@ -67,7 +67,7 @@ class Instrument {
       @out.control(name, v)
     }
     self._build_keys() if fm.keys_shape(patch) != fm.keys_shape(old)
-    @wind_box.set(fm.wind(patch)) if fm.wind_shape(patch) != fm.wind_shape(old)
+    self._build_wind() if fm.wind_shape(patch) != fm.wind_shape(old)
     @out.set(fm.output(
       patch,
       @keys_box,
@@ -81,7 +81,7 @@ class Instrument {
   }
   # The wind controller's note, nil when no finger is held.
   finger() {
-    @fingers.get(-1, nil)
+    @wind.held().get(-1, nil)
   }
   breath() {
     @blown
@@ -119,19 +119,16 @@ class Instrument {
     for n in @pressed.to_array() {
       self.key_off(n)
     }
-    @fingers = []
+    @wind.held().for_each(|n| @wind.note_off(n))
     self._blow()
   }
 
   finger_on(note) {
-    @fingers = @fingers.filter(|n| n != note) + [note]
-    @wind_box.control("wind_hz", Synth.hz(note))
+    @wind.note_on(note)
     self._blow()
   }
   finger_off(note) {
-    @fingers = @fingers.filter(|n| n != note)
-    let f = self.finger()
-    @wind_box.control("wind_hz", Synth.hz(f)) if f != nil
+    @wind.note_off(note)
     self._blow()
   }
   blow(x) {
@@ -165,6 +162,13 @@ class Instrument {
     self.sounding().for_each(|n| keys.note_on(n, velocity: @velocities["{n}"]))
     @keys = keys
     @keys_box.set(keys)
+  }
+  # A new wind voice for the patch; the fingers held go on in it.
+  _build_wind() {
+    let wind = fm.wind(@patch)
+    (@wind?.held() ?? []).for_each(|n| wind.note_on(n))
+    @wind = wind
+    @wind_box.set(wind)
   }
 }
 
