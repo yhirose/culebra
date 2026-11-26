@@ -125,7 +125,6 @@ let FACTORY = [
     ],
     feedback: 25.0,
     breath_bright: 80.0,
-    glide: 0.04,
   ),
   patch(
     "Wind Flute",
@@ -138,7 +137,6 @@ let FACTORY = [
     feedback: 60.0,
     reverb: 35.0,
     breath_bright: 60.0,
-    glide: 0.02,
   ),
 ]
 
