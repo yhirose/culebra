@@ -853,7 +853,9 @@ but the call itself still happens. A `@value` class whose declared fields
 are all machine scalars goes one step further: `C.new(args)` and a chain of
 field reads and same-class method calls on the result compile to slots
 instead, with no instance built and no call emitted at all, as long as the
-whole chain stays that way.
+whole chain stays that way. `C(args)` calls the same constructor and is the
+same construction (`culebra::construction_call` answers both shapes, and
+where each keeps its arguments).
 
 Eligibility is decided by `try_inline_value_chain` before a single
 instruction is emitted, over three questions, and a `no` to any of them
@@ -997,7 +999,10 @@ compiles through the very machinery a marked local's own chain does — and
 the eligibility question is the one §5.3.3's whole-scope walk already
 answers, asked about the dunder's body instead of a statement list. A
 parameter read bare anywhere (`o == nil`), or carrying a type annotation
-(whose check needs a tagged Value in one slot), declines.
+that does not admit the run's class, declines. One that
+admits it (`o: C`, `o: Any`) has nothing left to check: a run of a known
+class passes it by construction, the same test a run-returning member's
+return type is held to.
 
 That decline is a *refinement*, never a veto: the fold's up-front scan
 already proved the dunder splices with a boxed parameter, so declining
@@ -1007,6 +1012,24 @@ the scan's promise holds either way, and it never has to know which
 binding form the operand ends up taking. With both halves unboxed, a
 `v = v + C.new(...)` step allocates nothing at all, and the loop body it
 sits in reduces to its arithmetic.
+
+**A method's argument is bound by the same rule.** A spliced method call
+(`p.rot(b)`) binds its arguments to its parameters exactly as an operator
+binds its operand to its dunder's, so each argument asks the same two
+questions (`member_param_takes_run`, generalised from the dunder's one
+parameter to any member's `index`th): it stays a run when it resolves to
+one and the parameter is only read as one, and is compiled the ordinary
+way otherwise. The whole-scope walk answers with `chain_args_ok`, which
+the emitter (`splice_member_arg`) mirrors argument for argument; an
+argument neither of those takes is a reboxing boundary (§5.3.4), as before.
+
+**A chain on a local can end in a run.** `p.rot(b)` leaves an instance of
+`p`'s own class, and wherever a bare `p` may stand as a run — a fold's
+operand[0], a write's RHS, a compound step's operand — such a chain may
+stand too: `chain_resolves_to_class` answers it from the local's binding,
+`try_inline_value_chain` splices its steps onto the local's slots, and the
+walk counts it as rooted at the name (`run_rooted_at_name`). So
+`p += p.rot(b) * 0.5` builds nothing.
 
 Two consumer rules keep a run from reaching code that expects a tagged
 Value:
@@ -1026,7 +1049,7 @@ Value:
   receiver as its operand only outside a body, because inside one there is
   no consumer for the run it produces — a member's out slot is a run only
   for a `C.new(...)` tail, a body-internal fold-headed chain has no
-  lookahead to consume it (`try_inline_fold_chain` resolves operand[0]
+  lookahead to consume it (`try_inline_run_headed_chain` resolves operand[0]
   through a `Binding`, which `self` never has), and anything else expects
   a tagged Value. Accepting one gives four different wrong behaviors from one
   cause: `addp(o) { self + o }` returns its own first *field*, `-self`

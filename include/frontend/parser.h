@@ -968,6 +968,29 @@ inline const peg::Ast* new_call_head(const peg::Ast& call) {
              : nullptr;
 }
 
+// A postfix chain that may construct: `Name.new(args)`, or `Name(args)`,
+// which calls the same constructor (docs/language.md §10). `name` is the
+// head and `args` the index of the constructor's ARGUMENTS; the chain's own
+// steps start at `args + 1`. Whether `Name` holds a class is the caller's
+// question — the shape alone cannot tell `Name(args)` from a function call.
+struct ConstructionCall {
+  const peg::Ast* name;
+  size_t args;
+};
+inline std::optional<ConstructionCall> construction_call(const peg::Ast& call) {
+  using namespace peg::udl;
+  if (const peg::Ast* head = new_call_head(call)) {
+    if (call.nodes.size() < 3 || call.nodes[2]->original_tag != "ARGUMENTS"_)
+      return std::nullopt;
+    return ConstructionCall{head, 2};
+  }
+  if (call.tag != "CALL"_ || call.nodes.size() < 2 ||
+      call.nodes[0]->tag != "IDENTIFIER"_ ||
+      call.nodes[1]->original_tag != "ARGUMENTS"_)
+    return std::nullopt;
+  return ConstructionCall{call.nodes[0].get(), 1};
+}
+
 // True if this EFFECT_FN_DECL has a body (an effectful function) rather than a
 // bare operation declaration. Grammar:
 //   effect _ fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?

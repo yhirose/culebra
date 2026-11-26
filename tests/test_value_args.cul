@@ -1,0 +1,159 @@
+# A flat `@value` run reaches two more places without an instance being
+# built (docs/internals/vm.md §5.3.2, §5.3.3):
+#
+# - `C(args)`, which calls the same constructor `C.new(args)` does, and
+# - a spliced method's argument, when the method only reads its parameter
+#   the ways a run can serve — the rule an operator's operand already had —
+#   with a chain on a local that ends still holding the class (`p.rot(b)`)
+#   usable wherever such a run is consumed.
+#
+# Each case is checked against the same arithmetic written on plain Floats,
+# and the cases that must stay boxed keep their boxed results.
+# tests/resolve_shape_test.sh holds the bytecode side (no ValueBox, no call).
+#
+# Run: ./build/culebra tests/test_value_args.cul
+#      ./build/culebra --jit tests/test_value_args.cul
+
+@value
+class V2 {
+  x: Float
+  y: Float
+
+  new(@x, @y) {}
+
+  __add__(o) {
+    V2(self.x + o.x, self.y + o.y)
+  }
+
+  __mul__(k) {
+    V2(self.x * k, self.y * k)
+  }
+
+  rot(o) {
+    V2(self.x * o.x - self.y * o.y, self.x * o.y + self.y * o.x)
+  }
+
+  dot(o: V2) {
+    self.x * o.x + self.y * o.y
+  }
+
+  # reads its parameter bare, so a run cannot be bound to it
+  keep(o) {
+    takes(o).x + self.x
+  }
+}
+
+fn takes(v) {
+  v
+}
+
+# --- C(args) constructs, and keeps running unboxed ---
+
+fn by_call(n) {
+  mut p = V2(0.0, 0.0)
+  for _ in 0..n {
+    p += V2(0.5, 0.25)
+  }
+  p
+}
+let bc = by_call(4)
+assert_eq(bc.x, 2.0)
+assert_eq(bc.y, 1.0)
+assert_eq(type_of(bc), 'V2')
+
+# --- a method argument, and a chain ending in a run as an operand ---
+
+fn spin(n) {
+  mut p = V2(1.0, 0.0)
+  let b = V2(0.6, 0.8)
+  for _ in 0..n {
+    p += p.rot(b) * 0.5
+  }
+  p
+}
+fn spin_floats(n) {
+  mut (px, py) = (1.0, 0.0)
+  for _ in 0..n {
+    let (rx, ry) = (px * 0.6 - py * 0.8, px * 0.8 + py * 0.6)
+    px += rx * 0.5
+    py += ry * 0.5
+  }
+  (px, py)
+}
+let s = spin(5)
+let (sx, sy) = spin_floats(5)
+assert_eq(s.x, sx)
+assert_eq(s.y, sy)
+
+# a chain on the local as a write's RHS, and the local as its own argument
+fn square(n) {
+  mut p = V2(0.5, 0.5)
+  for _ in 0..n {
+    p = p.rot(p)
+  }
+  p
+}
+let q = square(2)
+assert_eq(q.x, -0.25)
+assert_eq(q.y, 0.0)
+
+# a chain ending in a run, in parentheses, as the head of a postfix chain
+fn heads() {
+  let p = V2(1.0, 0.0)
+  let b = V2(0.6, 0.8)
+  mut t = 0.0
+  for _ in 0..2 {
+    t += (p.rot(b)).x + (b.rot(p)).y + (p.rot(b)).rot(b).x
+  }
+  t + p.x
+}
+assert_eq(heads(), 2.0 * (0.6 + 0.8 + (0.6 * 0.6 - 0.8 * 0.8)) + 1.0)
+
+# a construction as an argument
+assert_eq(V2(1.0, 0.0).rot(V2(0.0, 1.0)).y, 1.0)
+
+# an annotated parameter that admits the class
+fn dots(n) {
+  let a = V2(1.0, 2.0)
+  let b = V2(3.0, 4.0)
+  mut t = 0.0
+  for _ in 0..n {
+    t += a.dot(b)
+  }
+  t
+}
+assert_eq(dots(3), 33.0)
+
+# --- a parameter read bare: the argument is reboxed, not handed a run ---
+
+fn kept(n) {
+  mut p = V2(1.0, 1.0)
+  let b = V2(2.0, 3.0)
+  mut t = 0.0
+  for _ in 0..n {
+    t += p.keep(b)
+  }
+  t
+}
+assert_eq(kept(2), 6.0)
+
+# an annotation that does not admit the run's class still checks, and fails
+@value
+class W {
+  x: Float
+  new(@x) {}
+  pick(o: V2) {
+    o.x
+  }
+}
+fn wrong() {
+  let w = W(1.0)
+  let u = W(2.0)
+  w.pick(u)
+}
+let e = try {
+  wrong()
+} catch err {
+  err.kind
+}
+assert_eq(e, 'TypeError')

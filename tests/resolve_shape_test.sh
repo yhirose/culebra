@@ -78,6 +78,56 @@ class V2 {
 V2.new(3.0, 4.0).len()' \
 '\(V2\.x\)' 1
 
+# ...and so does `V2(...)`, which calls the same constructor.
+check "a call-form construction unboxes" \
+'@value
+class V2 {
+  x: Float
+  y: Float
+  new(x: Float, y: Float) { self.x = x; self.y = y }
+  len() { Math.sqrt(self.x * self.x + self.y * self.y) }
+}
+V2(3.0, 4.0).len()' \
+'\(V2\.x\)' 1
+
+# A method whose body only reads its parameter as a run takes its argument
+# as one, and a chain on a local ending in a run is an operand like the
+# local itself: the loop builds no instance and calls nothing.
+spin='@value
+class V2 {
+  x: Float
+  y: Float
+  new(x: Float, y: Float) { self.x = x; self.y = y }
+  __add__(o) { V2.new(self.x + o.x, self.y + o.y) }
+  __mul__(k) { V2.new(self.x * k, self.y * k) }
+  rot(o) { V2.new(self.x * o.x - self.y * o.y, self.x * o.y + self.y * o.x) }
+}
+fn spin(n) {
+  mut p = V2.new(1.0, 0.0)
+  let b = V2.new(0.6, 0.8)
+  for _ in 0..n { p += p.rot(b) * 0.5 }
+  p.x
+}'
+check "a method argument stays a run" "$spin" \
+  ' (ValueBox|CallM|Call) .*; 1[0-4]:' 0
+
+# The negative half: a parameter the body reads bare gets an instance.
+check "a parameter read bare reboxes its argument" \
+'@value
+class V2 {
+  x: Float
+  new(x: Float) { self.x = x }
+  keep(o) { take(o).x + self.x }
+}
+fn take(v) { v }
+fn f() {
+  let p = V2.new(1.0)
+  let b = V2.new(2.0)
+  p.keep(b)
+}
+println(f())' \
+' ValueBox ' 1
+
 # ...and a class the layout rules refuse keeps the boxed form. Without this
 # the check above would pass just as well if everything unboxed.
 check "nested-@value field stays boxed" \
