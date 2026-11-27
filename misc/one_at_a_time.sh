@@ -27,6 +27,11 @@
 # CULEBRA_LOCKS_HELD lists the locks held up the process tree, and a lock on
 # that list runs the command straight away.
 #
+# Whoever takes a lock notes itself beside it ($lock.who: its pid, folder,
+# command or CULEBRA_LOCK_LABEL, and since when), and a command that has to wait
+# says who that is: the wait may be for another checkout, or another project
+# that takes this lock around its own heavy jobs.
+#
 # Escape hatch: CULEBRA_GATE_LOCK=0 (or "off") runs unlocked. The fast inner
 # loop (`just dev` / `just test-dev`) is deliberately NOT wrapped: it has to
 # stay responsive even while someone else's gate — or a `just land` — is
@@ -70,12 +75,28 @@ export CULEBRA_LOCKS_HELD="${CULEBRA_LOCKS_HELD:+$CULEBRA_LOCKS_HELD:}$lock"
 # command runs exactly once and its exit status is passed through untouched.
 # Neither tool exists everywhere (a bare container, say); without one the
 # command simply runs, which is the behaviour these recipes had before.
+# The note is only believed while its writer is alive: a holder that did not
+# write one (an older copy of this script) leaves the last one behind.
+waiting() {
+  local pid label
+  if IFS=' ' read -r pid label 2>/dev/null <"$lock.who" && kill -0 "$pid" 2>/dev/null; then
+    echo "$wait_msg held by $label" >&2
+  else
+    echo "$wait_msg" >&2
+  fi
+}
+label="${CULEBRA_LOCK_LABEL:-$PWD: $*}"
+unset CULEBRA_LOCK_LABEL
+label="$(printf '%s' "$label" | tr '\n' ' ' | cut -c1-200)"
+# Runs under the lock, notes who it is and gives its place to the command.
+note='printf "%s %s (since %s)\n" "$$" "$1" "$(date +%H:%M:%S)" >"$2"; shift 2; exec "$@"'
+
 if command -v lockf >/dev/null 2>&1; then
-  lockf -k -s -t 0 "$lock" true || echo "$wait_msg" >&2
-  exec lockf -k "$lock" "$@"
+  lockf -k -s -t 0 "$lock" true || waiting
+  exec lockf -k "$lock" sh -c "$note" note "$label" "$lock.who" "$@"
 elif command -v flock >/dev/null 2>&1; then
-  flock -n "$lock" true || echo "$wait_msg" >&2
-  exec flock "$lock" "$@"
+  flock -n "$lock" true || waiting
+  exec flock "$lock" sh -c "$note" note "$label" "$lock.who" "$@"
 else
   exec "$@"
 fi

@@ -74,6 +74,19 @@ touch "$TMP/release"
 wait "$first" "$second"
 [ -e "$TMP/second" ] || fail "the second process ran before the first let go, or never ran"
 
+# A command that waits says who holds the lock, by the holder's label.
+CULEBRA_LOCK_LABEL="the holder's job" "$LOCK_SH" sh -c 'touch "$1/held"; while [ ! -e "$1/let-go" ]; do sleep 0.01; done' _ "$TMP" &
+holder=$!
+within 10 sh -c 'while [ ! -e "$1/held" ]; do sleep 0.01; done' _ "$TMP" \
+  || fail "the holder never took the lock"
+"$LOCK_SH" --wait-msg queued true 2>"$TMP/third.err" &
+third=$!
+within 10 sh -c 'until grep -q queued "$1"; do sleep 0.01; done' _ "$TMP/third.err"
+grep -q "held by the holder's job (since " "$TMP/third.err" \
+  || fail "the waiting message did not name the holder: $(cat "$TMP/third.err")"
+touch "$TMP/let-go"
+wait "$holder" "$third"
+
 # A lock in a folder that is not there fails at once, naming the folder; it
 # does not turn into a lock at /, waiting.
 "$LOCK_SH" --lock "$TMP/missing/dir/x.lock" true 2>"$TMP/missing.err"

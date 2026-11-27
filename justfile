@@ -70,7 +70,9 @@ build *extra:
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON {{llvm_dir}} {{extra}} .. > /dev/null
     # make.log keeps the whole output: a parallel failure's own error line
     # sits far above the "Error 2" it ends on.
+    rm -f build/built-from
     cd build && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} 2>&1 | tee make.log
+    misc/built_from.sh record
 
 # Fast dev build: LTO off and -O1, still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
@@ -524,7 +526,13 @@ dev-llama *extra:
 # (include/base/source_dir.h) — so keep this tree, or point CULEBRA_HOME at one.
 [doc("Install the Release binary into PREFIX/bin (default /usr/local, sudo only if needed).")]
 [group("build")]
-install PREFIX='/usr/local': build (install-bin 'build/culebra' 'culebra' PREFIX)
+install PREFIX='/usr/local': _build-unless-current (install-bin 'build/culebra' 'culebra' PREFIX)
+
+# `just build`, unless build/culebra is already this clean tree's HEAD: with
+# nothing to compile, an install does not wait for the heavy-lane lock.
+[private]
+_build-unless-current:
+    misc/built_from.sh current || just build
 
 # The Kauai command line (kauai/cli/main.cul), compiled ahead of time into one
 # binary. The sound packages are compiled in and it reads no module at run time,
