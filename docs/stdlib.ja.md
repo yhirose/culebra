@@ -6453,7 +6453,7 @@ while !view.closing() {
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | 2D呼び出しで塗るrender-to-textureを開く / 閉じる |
 | `view.render_target(w, h, supersample = 1) -> Texture` | 第2カメラからシーンを描き込むテクスチャ（下記） |
 | `tex.width()` / `tex.height() -> Float` | ピクセル寸法 |
-| `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"`（ミップマップ）、`"point_mipmap"`（ミップマップを使うが、拡大されたテクセルは鋭い四角のまま。近くはドット、遠くは平均の色）、`"point_coverage"`（`"point_mipmap"`と同じだが、テクセルの境目にかかる画素は、両側をその画素に占める割合で混ぜる。カメラが動くと境目が画素の上をなめらかに動き、1画素跳んで戻ることがない）。知らない名前はログに出して、フィルタは変えない |
+| `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"`（ミップマップ）、`"point_mipmap"`（ミップマップを使うが、拡大されたテクセルは鋭い四角のまま。近くはドット、遠くは平均の色）、`"point_coverage"`（`"point_mipmap"`と同じだが、テクセルの境目にかかる画素は、両側をその画素に占める割合で混ぜる。カメラが動くと境目が画素の上をなめらかに動き、1画素跳んで戻ることがない）、`"point_majority"`（`"point_coverage"`と同じだが、2画素より大きく拡大されたテクセルは、バイリニアが混ぜる4テクセルのうち重みを一番多く持つ色を選ぶ。どの画素もいずれかのテクセルの色のままで、同じ色の領域の輪郭はテクセルの四角の辺ではなく角を通る曲線になり、パレットの画像の元の形に近づく。この輪郭はメッシュの縁と同じく、描画のスーパーサンプルでなめらかになる。1〜2画素の間は`"point_coverage"`へ混ざる）。知らない名前はログに出して、フィルタは変えない |
 | `tex.wrap(name) -> Texture` | 端の外側: `"repeat"`、`"clamp"`、`"mirror"` |
 
 `checker`・`grain`・`canvas`・`render_target`に渡す大きさも、下の画像の規則に従います。

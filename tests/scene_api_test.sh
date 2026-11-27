@@ -647,7 +647,48 @@ EOF
 # edges); at the far row texels are sub-pixel, so point_mipmap averages them
 # to grey while plain point still aliases to pure pixels. point_coverage keeps
 # the near texels pure but for the one pixel at each edge, and averages far.
+# point_majority keeps them pure too (a stripe's columns hold the bilinear
+# weight as point picks them) and averages far as point_coverage does.
 # Post pass off, so nothing blurs the rows.
+# point_majority: one black texel in a white 8x8 texture, seen from straight
+# above and magnified some 15 pixels a texel. point draws it a square;
+# point_majority keeps the pixels where it holds more than half the bilinear
+# weight, (1 - |dx|)(1 - |dy|) > 1/2, about 0.61 of the square and round.
+cat > scene_pmaj.cul <<'EOF'
+let view = Scene.View.new(160, 120, "scene pmaj")
+# white, as the texture round the texel: only the texel counts dark
+view.background(255, 255, 255)
+view.post_process(false)
+let img = Scene.Image.new(8, 8).fill(255, 255, 255)
+img.pixel(3, 3, 0, 0, 0)
+let tex = view.texture(img, false, false).wrap("clamp")
+let mat = view.add_material().texture(tex).unlit()
+view.add_plane(8.0, 8.0).material(mat)
+view.camera(0.0, 6.93, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 60.0)
+Canvas.init(160, 120)
+# dark pixels of the frame drawn with `mode`
+fn dark(mode) {
+  tex.filter(mode)
+  view.render_3d()
+  view.screenshot("pmaj_{mode}.png")
+  view.present()
+  Canvas.clear(Canvas.rgba(255, 255, 255))
+  Canvas.Sprite.from_png(FS.read("pmaj_{mode}.png")).draw(0, 0)
+  mut n = 0
+  for y in 0..120 {
+    for x in 0..160 {
+      n += 1 if (Canvas.get_pixel(x, y) & 255) < 128
+    }
+  }
+  n
+}
+let square = dark("point")
+let round = dark("point_majority")
+let share = to_float(round) / to_float(square)
+println("dark pixels: point {square}, point_majority {round}")
+println("majority rounds the texel: {square > 100 && share > 0.5 && share < 0.72}")
+EOF
+
 cat > scene_pmip.cul <<'EOF'
 let view = Scene.View.new(160, 120, "scene pmip")
 view.background(20, 24, 30)
@@ -688,6 +729,8 @@ fn pure_in_rows(mode) {
 let (pm_near, pm_far) = pure_in_rows("point_mipmap")
 let (tri_near, tri_far) = pure_in_rows("trilinear")
 let (pt_near, pt_far) = pure_in_rows("point")
+let (pj_near, pj_far) = pure_in_rows("point_majority")
+println("majority keeps near texels pure and averages far: {pj_near == 160 && pj_far == 0}")
 let (pc_near, pc_far) = pure_in_rows("point_coverage")
 println("point_coverage near {pc_near} far {pc_far}")
 println("near stays sharp: {pm_near == 160 && pt_near == 160 && tri_near < 160}")
@@ -1684,8 +1727,11 @@ run_pair() {
 run_pair nosun "unlit pixels not magenta: 0"
 echo "OK: with no sun() call an unlit surface keeps its colour"
 run_pair pmip "near stays sharp: true" "far is averaged: true" \
+  "majority keeps near texels pure and averages far: true" \
   "coverage greys only the edges: true" "unknown name keeps the last filter: true"
 echo "OK: point_mipmap keeps near texels sharp and averages far ones; point_coverage greys only their edges"
+run_pair pmaj "majority rounds the texel: true"
+echo "OK: point_majority draws a lone magnified texel round, not square"
 run_pair tmips "size 64.0x64.0" "near is level 0: true" "far is a given level: true" \
   "ValueError: view.texture_mips: levels is empty" \
   "ValueError: view.texture_mips: a 64x64 texture has 7 levels down to 1x1, got 3" \

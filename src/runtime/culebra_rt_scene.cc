@@ -181,7 +181,7 @@ uniform sampler2D detailMap;
 uniform float detailStrength;   // 0 = no detail texture
 uniform float detailMasked;     // 1: texture0's alpha is the detail's strength, not coverage
 uniform float lodBias;          // log2 of a supersampled pass's factor, else 0
-uniform float texelCover;       // 1: texture0 is filtered "point_coverage"
+uniform float texelFilter;      // texture0 sampled here: 1 "point_coverage", 2 "point_majority"
 uniform mat4 lightVP0;
 uniform mat4 lightVP1;
 uniform vec4 colDiffuse;
@@ -237,10 +237,37 @@ vec4 coverLevel(vec2 uv, float level, vec2 span) {
   p = edge + clamp((p - edge) / w, -0.5, 0.5);
   return textureLod(texture0, p / size, level);
 }
+// "point_majority" magnified: of the four texels bilinear filtering blends,
+// the colour whose texels hold the most of its weight (the first of a tie).
+// Each pixel takes one texel's colour, and a region's outline runs where its
+// weight crosses its neighbour's, a curve through the texel corners rather
+// than their square edges.
+bool sameTexel(vec4 a, vec4 b) { return all(lessThan(abs(a - b), vec4(0.5 / 255.0))); }
+vec4 majority(vec2 uv) {
+  vec2 size = vec2(textureSize(texture0, 0));
+  vec2 p = uv * size - 0.5;
+  vec2 i = floor(p), f = p - i;
+  vec4 c[4] = vec4[4](textureLod(texture0, (i + vec2(0.5, 0.5)) / size, 0.0),
+                      textureLod(texture0, (i + vec2(1.5, 0.5)) / size, 0.0),
+                      textureLod(texture0, (i + vec2(0.5, 1.5)) / size, 0.0),
+                      textureLod(texture0, (i + vec2(1.5, 1.5)) / size, 0.0));
+  float w[4] = float[4]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y),
+                        (1.0 - f.x) * f.y, f.x * f.y);
+  int best = 0;
+  float top = -1.0;
+  for (int a = 0; a < 4; a++) {
+    float s = 0.0;
+    for (int b = 0; b < 4; b++) s += sameTexel(c[a], c[b]) ? w[b] : 0.0;
+    if (s > top) { top = s; best = a; }
+  }
+  return c[best];
+}
 // The levels the hardware would pick (lodBias included), each read by
-// coverLevel and blended as trilinear blends them.
+// coverLevel and blended as trilinear blends them. "point_majority" reads
+// the majority where a texel spans two pixels or more, point_coverage where
+// it spans one or fewer, and blends the two between.
 vec4 baseColor(vec2 uv) {
-  if (texelCover < 0.5) return texture(texture0, uv, lodBias);
+  if (texelFilter < 0.5) return texture(texture0, uv, lodBias);
   vec2 dx = dFdx(uv), dy = dFdy(uv);
   vec2 size0 = vec2(textureSize(texture0, 0));
   float rho = max(length(dx * size0), length(dy * size0));
@@ -250,7 +277,10 @@ vec4 baseColor(vec2 uv) {
   vec2 span = abs(dx) + abs(dy);
   vec4 c = coverLevel(uv, l0, span);
   float t = lod - l0;
-  return t > 0.0 ? mix(c, coverLevel(uv, l0 + 1.0, span), t) : c;
+  if (t > 0.0) c = mix(c, coverLevel(uv, l0 + 1.0, span), t);
+  if (texelFilter < 1.5) return c;
+  float near = log2(max(rho, 1e-8)) + lodBias;
+  return near >= 0.0 ? c : mix(majority(uv), c, smoothstep(-1.0, 0.0, near));
 }
 // The 4x4 ordered-dither thresholds (Bayer): each 2x2 block holds an even
 // spread too, so a 2x resolve averages four levels and a 4x one all sixteen.
@@ -720,9 +750,9 @@ class Texture : public std::enable_shared_from_this<Texture> {
   // flip is folded into wherever the texture is read: the material's UV
   // transform (emit) and a sprite's source rectangle. One flag, every reader.
   bool flip_v = false;
-  // filter("point_coverage"): the lit shader blends a texel edge by the share
-  // of the pixel each side covers (texelCover), on linear sampling.
-  bool coverage = false;
+  // filter("point_coverage") (1) and filter("point_majority") (2): the lit
+  // shader samples texture0 itself (texelFilter), on linear sampling.
+  int texel_filter = 0;
   uint64_t epoch = gl_epoch();
   // A UV transform (scale.xy, offset.zw) that reads this texture upright:
   // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo). The flip composes with the
@@ -754,10 +784,12 @@ class Texture : public std::enable_shared_from_this<Texture> {
   // "trilinear" (mipmapped — built here if the upload skipped them),
   // "point_mipmap" (mipmapped; magnified texels stay sharp), "point_coverage"
   // (point_mipmap whose texel edges are blended by the share of the pixel
-  // each side covers, so an edge slides instead of jumping a pixel).
+  // each side covers, so an edge slides instead of jumping a pixel),
+  // "point_majority" (point_coverage whose magnified texels take the colour
+  // holding most of the bilinear weight, so a region's outline is a curve).
   Texture& filter(std::string name) {
     if (!live()) return *this;
-    bool cover = false;
+    int shader_filter = 0;
     if (name == "point") SetTextureFilter(tex, TEXTURE_FILTER_POINT);
     else if (name == "bilinear") SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
     else if (name == "trilinear") { ensure_mipmaps(); SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR); }
@@ -766,18 +798,18 @@ class Texture : public std::enable_shared_from_this<Texture> {
       rlTextureParameters(tex.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_NEAREST);
       rlTextureParameters(tex.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_NEAREST_MIP_LINEAR);
     }
-    else if (name == "point_coverage") {
+    else if (name == "point_coverage" || name == "point_majority") {
       // The shader picks the level and where in it to sample; the hardware
       // only interpolates between the two texels it lands between.
       ensure_mipmaps();
       SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR);
-      cover = true;
+      shader_filter = name == "point_coverage" ? 1 : 2;
     }
     else {
-      TraceLog(LOG_ERROR, "Scene: filter('%s') names no mode (point / bilinear / trilinear / point_mipmap / point_coverage) — unchanged.", name.c_str());
+      TraceLog(LOG_ERROR, "Scene: filter('%s') names no mode (point / bilinear / trilinear / point_mipmap / point_coverage / point_majority) — unchanged.", name.c_str());
       return *this;
     }
-    coverage = cover;
+    texel_filter = shader_filter;
     return *this;
   }
   void ensure_mipmaps() { if (tex.mipmaps <= 1) GenTextureMipmaps(&tex); }
@@ -1794,7 +1826,7 @@ class View {
     loc_fade_ = GetShaderLocation(lit_, "fade");
     loc_emissive_ = GetShaderLocation(lit_, "emissive");
     loc_unlit_ = GetShaderLocation(lit_, "unlit");
-    loc_texcover_ = GetShaderLocation(lit_, "texelCover");
+    loc_texfilter_ = GetShaderLocation(lit_, "texelFilter");
     loc_uv_ = GetShaderLocation(lit_, "uvXform");
     loc_nstrength_ = GetShaderLocation(lit_, "normalStrength");
     loc_lodbias_ = GetShaderLocation(lit_, "lodBias");
@@ -2464,7 +2496,7 @@ class View {
     float cutoff = m ? m->cutoff : 0.0f;
     Vector2 fade = m ? m->fade_ : Vector2{0, 0};
     float unlit = m && m->unlit_ ? 1.0f : 0.0f;
-    float texcover = t && t->coverage ? 1.0f : 0.0f;
+    float texfilter = t ? float(t->texel_filter) : 0.0f;
     Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
     Vector4 uv = m ? m->uv_ : Vector4{1, 1, 0, 0};
     if (t) uv = t->upright(uv);
@@ -2493,7 +2525,7 @@ class View {
     SetShaderValue(lit_, loc_fade_, &fade, SHADER_UNIFORM_VEC2);
     SetShaderValue(lit_, loc_emissive_, &emissive, SHADER_UNIFORM_VEC3);
     SetShaderValue(lit_, loc_unlit_, &unlit, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(lit_, loc_texcover_, &texcover, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_texfilter_, &texfilter, SHADER_UNIFORM_FLOAT);
     set_finish(lit_, lit_fin_, fogon, alpha_mode, it.opacity / 255.0f);
     SetShaderValue(lit_, loc_uv_, &uv, SHADER_UNIFORM_VEC4);
     DrawMesh(*it.node->mesh_for(ctx), mat_, it.draw);
@@ -3012,7 +3044,7 @@ class View {
   int loc_lvp0_ = 0, loc_lvp1_ = 0;
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
-  int loc_cutoff_ = 0, loc_fade_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_texcover_ = 0;
+  int loc_cutoff_ = 0, loc_fade_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_texfilter_ = 0;
   int loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
   int loc_detail_uv_ = 0, loc_detail_k_ = 0, loc_detail_masked_ = 0;
   bool culling_ = true;
