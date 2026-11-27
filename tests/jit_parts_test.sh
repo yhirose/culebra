@@ -103,19 +103,21 @@ run() {
     "$CULEBRA" --jit "$file" > "$TMP/$name.out" 2> "$TMP/$name.err"
   echo "$?" > "$TMP/$name.rc"
 }
+# In bash alone: the Windows job's shell has no cmp.
+equal() { [ "$(< "$1")" = "$(< "$2")" ]; }
 same() {  # the two runs agree on all three
   local part
   for part in out rc; do
-    cmp -s "$TMP/$1.$part" "$TMP/$2.$part" ||
+    equal "$TMP/$1.$part" "$TMP/$2.$part" ||
       bad "$2 differs from $1 in $part: $(head -c 400 "$TMP/$2.$part") $(head -c 400 "$TMP/$2.err")"
   done
   grep -v '^\[jit-time\]' "$TMP/$2.err" | grep -v '^$' > "$TMP/$2.said"
-  cmp -s "$TMP/$1.err" "$TMP/$2.said" ||
+  equal "$TMP/$1.err" "$TMP/$2.said" ||
     bad "$2 differs from $1 in err: $(head -c 400 "$TMP/$2.said")"
 }
 # A timed run also prints LLVM's reports: stdout and status are what to compare.
 agrees() {
-  cmp -s "$TMP/$1.out" "$TMP/$2.out" && cmp -s "$TMP/$1.rc" "$TMP/$2.rc" ||
+  equal "$TMP/$1.out" "$TMP/$2.out" && equal "$TMP/$1.rc" "$TMP/$2.rc" ||
     bad "$2 differs from $1: $(head -c 400 "$TMP/$2.out")"
 }
 
