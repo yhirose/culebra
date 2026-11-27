@@ -650,6 +650,32 @@ EOF
 # point_majority keeps them pure too (a stripe's columns hold the bilinear
 # weight as point picks them) and averages far as point_coverage does.
 # Post pass off, so nothing blurs the rows.
+# A cutout rendered into a target: a white plane whose texture's alpha is 0.7
+# everywhere, cut at 0.5, so all of it is kept. It is opaque, so the target
+# holds it white with alpha 1, and the target drawn over black stays white
+# (an alpha of 0.7 would blend it to grey).
+cat > scene_cutrt.cul <<'EOF'
+let view = Scene.View.new(160, 120, "scene cutrt")
+view.background(0, 0, 0)
+view.post_process(false)
+let img = Scene.Image.new(4, 4).fill(255, 255, 255, 178)
+let tex = view.texture(img, false, false).filter('bilinear')
+let mat = view.add_material().texture(tex).unlit().cutout(0.5)
+view.add_plane(8.0, 8.0).material(mat)
+let target = view.render_target(160, 120)
+view.render_to(target, 0.0, 6.93, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 60.0)
+view.begin_2d()
+view.sprite(target, 0.0, 0.0, 160.0, 120.0)
+view.screenshot("cutrt.png")
+view.present()
+Canvas.init(160, 120)
+Canvas.clear(Canvas.rgba(0, 0, 0))
+Canvas.Sprite.from_png(FS.read("cutrt.png")).draw(0, 0)
+let r = Canvas.get_pixel(80, 60) & 255
+println("centre red {r}")
+println("a kept cutout is opaque in a target: {r >= 250}")
+EOF
+
 # point_majority: one black texel in a white 8x8 texture, seen from straight
 # above and magnified some 15 pixels a texel. point draws it a square;
 # point_majority keeps the pixels where it holds more than half the bilinear
@@ -1731,6 +1757,8 @@ run_pair pmip "near stays sharp: true" "far is averaged: true" \
   "coverage greys only the edges: true" "unknown name keeps the last filter: true"
 echo "OK: point_mipmap keeps near texels sharp and averages far ones; point_coverage greys only their edges"
 run_pair pmaj "majority rounds the texel: true"
+run_pair cutrt "a kept cutout is opaque in a target: true"
+echo "OK: a cutout drawn into a render target covers its pixels whole"
 echo "OK: point_majority draws a lone magnified texel round, not square"
 run_pair tmips "size 64.0x64.0" "near is level 0: true" "far is a given level: true" \
   "ValueError: view.texture_mips: levels is empty" \

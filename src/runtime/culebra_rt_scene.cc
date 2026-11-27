@@ -132,7 +132,8 @@ uniform float fogOn;      // 0: fog does not reach this surface
 uniform float opacity;    // 0..1: node x material; a surface's texture alpha and a line's edges multiply it
 // Which pass: 0 = opaque, alpha carries depth for the post stack; 1 = the
 // transparent pass, alpha is coverage and the blend leaves the destination's
-// alpha (the depth) alone.
+// alpha (the depth) alone; 2 = opaque into a render target, alpha 1: what a
+// cutout keeps covers its pixel whole, whatever its texture's alpha there.
 uniform float alphaMode;
 vec4 finish(vec3 col, vec3 world, float cover) {
   // Distance fog toward fogColor (off when fogStart is set very large).
@@ -153,7 +154,8 @@ vec4 finish(vec3 col, vec3 world, float cover) {
   // Opaque pass: alpha carries linear camera depth (0=near .. 1=far) for the
   // post pass's SSAO + depth-of-field — packing it here avoids a second
   // sampler on macOS. Transparent pass: alpha is the coverage the blend uses.
-  return alphaMode < 0.5 ? vec4(col, clamp(dist / 3000.0, 0.0, 1.0)) : vec4(col, cover);
+  if (alphaMode < 0.5) return vec4(col, clamp(dist / 3000.0, 0.0, 1.0));
+  return alphaMode < 1.5 ? vec4(col, cover) : vec4(col, 1.0);
 }
 )";
 
@@ -2467,7 +2469,7 @@ class View {
         depth_bias = want_bias;
       }
       float fogon = m && !m->fog_ ? 0.0f : 1.0f;
-      float alpha_mode = (it.transparent || !pass.depth_in_alpha) ? 1.0f : 0.0f;
+      float alpha_mode = it.transparent ? 1.0f : pass.depth_in_alpha ? 0.0f : 2.0f;
       if (surface) {
         draw_surface(it, ctx, fogon, alpha_mode);
         depth_stale |= want_dw && !it.transparent;
