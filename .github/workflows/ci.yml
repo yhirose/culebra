@@ -831,6 +831,12 @@ jobs:
           ./build/culebra build aot_smoke.cul -o aot_smoke
           test "$(./aot_smoke)" = 'HI, A|hi, b|greet|String|3truetrue|12'
 
+      # The heavy AOT block that runs this elsewhere is skipped here, and a
+      # module baked in parts (CMakeLists' _baked_parts_*) is several archive
+      # members ld64 has to pull for one entry.
+      - name: Baked preamble through every lane (modules in parts via ld64)
+        run: tools/checks/check_baked_preamble.sh build
+
   # The macOS half of what doctest-ubuntu does, and here for the same reason it
   # is there: the step was ~340s of test-macos, the longest job in the run, so
   # everything waiting on the run waited on it. The headers a host includes

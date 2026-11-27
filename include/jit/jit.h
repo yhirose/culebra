@@ -54,6 +54,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"  // nameUnamedGlobals
 #include "llvm/ADT/EquivalenceClasses.h"  // split_into_parts
 #include "llvm/ADT/MapVector.h"  // split_into_parts
+#include "llvm/ADT/SmallSet.h"   // split_into_parts
 #include "llvm/ADT/StringMap.h"  // split_into_parts
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"  // SimpleCompiler
 #include "llvm/IR/InstIterator.h"  // split_into_parts
@@ -1578,19 +1579,41 @@ struct JIT {
            var->hasLocalLinkage() && var->hasAtLeastLocalUnnamedAddr();
   }
 
+  // How the objects of one program reach each other's symbols.
+  enum class ObjectLink {
+    // Loaded side by side by ORC (--jit).
+    loaded,
+    // Linked by the system linker into the image that carries them (the baked
+    // preamble): a symbol stays inside it.
+    linked,
+  };
+
   // A symbol of one object, made another's to resolve.
-  static void export_local(llvm::GlobalValue& own) {
+  static void export_local(llvm::GlobalValue& own,
+                           ObjectLink link = ObjectLink::loaded) {
     if (!own.hasLocalLinkage()) return;
     own.setLinkage(llvm::GlobalValue::ExternalLinkage);
-    own.setVisibility(llvm::GlobalValue::DefaultVisibility);
     own.setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::None);
+    if (link == ObjectLink::linked) {
+      own.setVisibility(llvm::GlobalValue::HiddenVisibility);
+      own.setDSOLocal(true);
+    } else {
+      own.setVisibility(llvm::GlobalValue::DefaultVisibility);
+    }
   }
 
-  // `ref` stands in one object for a symbol of another's: it goes through the
-  // indirection the object format gives such a reference (a GOT entry; COFF's
-  // import pointer, for data the program `defines`).
+  // `ref` stands in one object for a symbol of another's. Loaded, it goes
+  // through the indirection the object format gives such a reference (a GOT
+  // entry; COFF's import pointer, for data the program `defines`); linked
+  // into one image, it is a direct reference to a hidden symbol.
   static void refer_to_other_object(llvm::GlobalValue& ref, bool defines,
-                                    bool coff) {
+                                    bool coff,
+                                    ObjectLink link = ObjectLink::loaded) {
+    if (link == ObjectLink::linked) {
+      ref.setVisibility(llvm::GlobalValue::HiddenVisibility);
+      ref.setDSOLocal(true);
+      return;
+    }
     ref.setVisibility(llvm::GlobalValue::DefaultVisibility);
     ref.setDSOLocal(false);
     if (coff && defines && llvm::isa<llvm::GlobalVariable>(ref))
@@ -6147,25 +6170,43 @@ struct JIT {
     }();
     return n;
   }
+  static size_t part_count(const llvm::Module& mod) {
+    return std::min<size_t>(kMaxParts,
+                            mod.getInstructionCount() / part_instructions());
+  }
 
-  // A module split into parts: its one bitcode, and which part has the body
-  // of each function. Part 0 also defines the globals.
+  // A callee this small shares its callers' part, so the attributes the
+  // pipeline infers for it reach their code. It is a balance, not an inlining
+  // bound (no lowered function is inlined into another): a small callee many
+  // functions share joins them all, and 1,000 put 58% of Kauai in one part.
+  static constexpr unsigned kJoinCalleeInstructions = 500;
+
+  // A module split into parts: its one bitcode, which part has the body of
+  // each function and the definition of each global, and how the parts'
+  // objects reach each other's symbols.
   struct Parts {
     std::string bitcode;
     llvm::StringMap<size_t> owner;
     size_t count = 0;
+    ObjectLink link = ObjectLink::loaded;
   };
 
-  // `mod` as parts, or none when it is to be compiled whole. A function and
-  // what it calls directly go into one part, so inlining and the attributes
-  // inferred from a callee see what they would see whole; the entry's own
-  // calls are left out, which would join much of the program.
-  static std::optional<Parts> split_into_parts(llvm::Module& mod) {
+  // `mod` in up to `count` parts, or none when it is to be compiled whole. A
+  // function and its small direct callees go into one part; the calls of
+  // `entry`, the top level, are left out, which would join much of the
+  // program. A global is defined in the one part that uses it, or else in
+  // part 0. Only what another part uses is exported, and a linked one under
+  // `<entry>.<name>`, so two modules' parts cannot collide in one image.
+  static std::optional<Parts> split_into_parts(llvm::Module& mod, size_t count,
+                                               ObjectLink link,
+                                               llvm::StringRef entry_name) {
     using namespace llvm;
-    size_t count = std::min<size_t>(
-        kMaxParts, mod.getInstructionCount() / part_instructions());
     if (count < 2) return std::nullopt;
-    const Function* entry = mod.getFunction("__culebra_main");
+    const Function* entry = mod.getFunction(entry_name);
+    // Counted once: getInstructionCount walks the whole function.
+    DenseMap<const Function*, unsigned> size_of;
+    for (auto& f : mod)
+      if (!f.isDeclaration()) size_of[&f] = f.getInstructionCount();
     EquivalenceClasses<const Function*> classes;
     for (auto& f : mod) {
       if (f.isDeclaration()) continue;
@@ -6174,7 +6215,8 @@ struct JIT {
       for (auto& inst : instructions(f))
         if (auto* call = dyn_cast<CallBase>(&inst))
           if (auto* callee = call->getCalledFunction();
-              callee && !callee->isDeclaration() && callee != entry)
+              callee && !callee->isDeclaration() && callee != entry &&
+              size_of.lookup(callee) < kJoinCalleeInstructions)
             classes.unionSets(&f, callee);
     }
     // Largest class first onto the lightest part, ties in the module's order:
@@ -6182,7 +6224,7 @@ struct JIT {
     MapVector<const Function*, size_t> sizes;
     for (auto& f : mod)
       if (!f.isDeclaration())
-        sizes[classes.getLeaderValue(&f)] += f.getInstructionCount();
+        sizes[classes.getLeaderValue(&f)] += size_of.lookup(&f);
     count = std::min(count, sizes.size());
     if (count < 2) return std::nullopt;
     std::vector<std::pair<const Function*, size_t>> order(sizes.begin(),
@@ -6197,23 +6239,62 @@ struct JIT {
       weight[i] += n;
       part_of[leader] = static_cast<size_t>(i);
     }
+    auto part_of_fn = [&](const Function* f) {
+      return part_of.lookup(classes.getLeaderValue(f));
+    };
+    // The parts whose code uses `gv`, through any constant expression; false
+    // when a use is not code (another global's initializer).
+    auto parts_using = [&](const GlobalValue& gv, SmallSet<size_t, 4>& in) {
+      SmallVector<const User*, 8> work(gv.users());
+      SmallPtrSet<const User*, 8> seen;
+      while (!work.empty()) {
+        const User* u = work.pop_back_val();
+        if (!seen.insert(u).second) continue;
+        if (auto* inst = dyn_cast<Instruction>(u)) {
+          in.insert(part_of_fn(inst->getFunction()));
+        } else if (isa<ConstantExpr>(u) || isa<ConstantAggregate>(u)) {
+          work.append(u->user_begin(), u->user_end());
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
     Parts parts;
     parts.count = count;
+    parts.link = link;
     nameUnamedGlobals(mod);
+    // Nothing calls the top level: a linked one keeps its own visibility.
+    assert(link == ObjectLink::loaded || !entry || entry->use_empty());
     for (auto& gv : mod.global_values()) {
       assert(!gv.hasAppendingLinkage() && !gv.isThreadLocal());
-      if (!address_means_nothing(gv)) export_local(gv);
+      if (gv.isDeclaration() || address_means_nothing(gv)) continue;
+      SmallSet<size_t, 4> in;
+      bool code_alone = parts_using(gv, in);
+      size_t at = 0;
+      if (auto* f = dyn_cast<Function>(&gv))
+        at = part_of_fn(f);
+      else if (code_alone && in.size() == 1)
+        at = *in.begin();
+      bool used_elsewhere =
+          !code_alone || any_of(in, [&](size_t p) { return p != at; });
+      if (used_elsewhere && gv.hasLocalLinkage()) {
+        // The `.` also keeps the name off the export lists, which match
+        // `culebra_[A-Za-z0-9_]+` (cmake/exported_symbols.txt, the .def).
+        if (link == ObjectLink::linked)
+          gv.setName(entry_name + "." + gv.getName());
+        export_local(gv, link);
+      }
+      parts.owner[gv.getName()] = at;
     }
-    for (auto& f : mod)
-      if (!f.isDeclaration())
-        parts.owner[f.getName()] = part_of.lookup(classes.getLeaderValue(&f));
     raw_string_ostream os(parts.bitcode);
     WriteBitcodeToFile(mod, os);
     os.flush();
     return parts;
   }
 
-  // Part `i`: the bodies it owns are read, the rest of the program declared.
+  // Part `i`: the bodies and definitions it owns are read, the rest of the
+  // program declared.
   static llvm::Expected<std::unique_ptr<llvm::Module>> read_part(
       const Parts& parts, size_t i, llvm::LLVMContext& ctx) {
     using namespace llvm;
@@ -6227,12 +6308,16 @@ struct JIT {
         if (auto err = f.materialize()) return std::move(err);
       } else {
         f.deleteBody();
-        refer_to_other_object(f, /*defines=*/true, coff);
+        refer_to_other_object(f, /*defines=*/true, coff, parts.link);
       }
     }
     if (auto err = (*mod)->materializeAll()) return std::move(err);
     for (auto& g : (*mod)->globals()) {
-      if (i == 0 || g.isDeclaration() || address_means_nothing(g)) continue;
+      // A local one is used by its own part alone, and dropped by the others'
+      // pipelines.
+      if (g.isDeclaration() || g.hasLocalLinkage() ||
+          parts.owner.lookup(g.getName()) == i)
+        continue;
       // A constant's value is still there to fold from.
       if (g.isConstant()) {
         g.setLinkage(GlobalValue::AvailableExternallyLinkage);
@@ -6240,62 +6325,32 @@ struct JIT {
         g.setInitializer(nullptr);
         g.setLinkage(GlobalValue::ExternalLinkage);
       }
-      refer_to_other_object(g, /*defines=*/true, coff);
+      refer_to_other_object(g, /*defines=*/true, coff, parts.link);
     }
     return mod;
   }
 
-  // Optimizes and compiles each part, on as many threads as the machine has
-  // cores for, and keeps them in the object cache as `cached_objects` and
-  // `cached_snapshots` read them.
-  static std::vector<std::unique_ptr<llvm::MemoryBuffer>> compile_parts(
-      const Parts& parts, int opt_level, const std::string& source_key,
-      const std::vector<Reoptimizable>& snapshots,
-      std::chrono::steady_clock::time_point& phase_t) {
+  // Reads each part, optimizes it and hands it to `emit(i, module)`, which
+  // returns an error or nothing, on as many threads as the machine has cores
+  // for. Returns the first error.
+  template <class Emit>
+  static std::string optimize_parts(const Parts& parts, int opt_level,
+                                    Emit&& emit) {
     using namespace llvm;
-    std::optional<orc::JITTargetMachineBuilder> target;
-    create_jit_instance(/*fast_codegen=*/false, &target);
-    assert(target);
-    auto* cache =
-        FileObjectCache::is_key(source_key) ? object_cache() : nullptr;
-    struct Part {
-      std::unique_ptr<MemoryBuffer> object;
-      std::string key;
-      std::string error;
-      bool compiled = false;
-    };
-    std::vector<Part> done(parts.count);
-    auto compile = [&](size_t i) {
-      Part& out = done[i];
+    std::vector<std::string> errors(parts.count);
+    auto one = [&](size_t i) {
       LLVMContext ctx;
       auto mod = read_part(parts, i, ctx);
       if (!mod) {
-        out.error = toString(mod.takeError());
+        errors[i] = toString(mod.takeError());
         return;
       }
-      optimize_module(**mod, opt_level);
-      if (cache) {
-        out.key = object_key_for(**mod, /*fast_codegen=*/false);
-        out.object = cache->object(out.key);
-        if (out.object) return;
-      }
-      auto builder = *target;
-      auto tm = builder.createTargetMachine();
-      if (!tm) {
-        out.error = toString(tm.takeError());
-        return;
-      }
-      auto object = orc::SimpleCompiler(**tm)(**mod);
-      if (!object) {
-        out.error = toString(object.takeError());
-        return;
-      }
-      out.object = std::move(*object);
-      out.compiled = true;
+      if (opt_level > 0) optimize_module(**mod, opt_level);
+      errors[i] = emit(i, **mod);
     };
     std::atomic<size_t> next = 0;
     auto work = [&] {
-      for (size_t i; (i = next++) < parts.count;) compile(i);
+      for (size_t i; (i = next++) < parts.count;) one(i);
     };
     // LLVM's pass timers are one per process, so a timed run takes turns.
     if (time_passes()) TimePassesIsEnabled = true;
@@ -6312,12 +6367,52 @@ struct JIT {
       work();
       for (auto& t : others) t.join();
     }
+    for (auto& e : errors)
+      if (!e.empty()) return e;
+    return {};
+  }
+
+  // Optimizes and compiles each part for the host, and keeps them in the
+  // object cache as `cached_objects` and `cached_snapshots` read them.
+  static std::vector<std::unique_ptr<llvm::MemoryBuffer>> compile_parts(
+      const Parts& parts, int opt_level, const std::string& source_key,
+      const std::vector<Reoptimizable>& snapshots,
+      std::chrono::steady_clock::time_point& phase_t) {
+    using namespace llvm;
+    std::optional<orc::JITTargetMachineBuilder> target;
+    create_jit_instance(/*fast_codegen=*/false, &target);
+    assert(target);
+    auto* cache =
+        FileObjectCache::is_key(source_key) ? object_cache() : nullptr;
+    struct Part {
+      std::unique_ptr<MemoryBuffer> object;
+      std::string key;
+      bool compiled = false;
+    };
+    std::vector<Part> done(parts.count);
+    auto error = optimize_parts(
+        parts, opt_level, [&](size_t i, Module& mod) -> std::string {
+          Part& out = done[i];
+          if (cache) {
+            out.key = object_key_for(mod, /*fast_codegen=*/false);
+            out.object = cache->object(out.key);
+            if (out.object) return {};
+          }
+          auto builder = *target;
+          auto tm = builder.createTargetMachine();
+          if (!tm) return toString(tm.takeError());
+          auto object = orc::SimpleCompiler(**tm)(mod);
+          if (!object) return toString(object.takeError());
+          out.object = std::move(*object);
+          out.compiled = true;
+          return {};
+        });
+    if (!error.empty())
+      report_fatal_error(StringRef(error), /*gen_crash_diag=*/false);
     std::vector<std::unique_ptr<MemoryBuffer>> objects;
     std::vector<std::string> keys;
     bool compiled = false;
     for (auto& p : done) {
-      if (!p.error.empty())
-        report_fatal_error(StringRef(p.error), /*gen_crash_diag=*/false);
       compiled |= p.compiled;
       if (cache) {
         if (p.compiled) cache->store(p.key, p.object->getBuffer());

@@ -1947,22 +1947,41 @@ it lets a run skip would have read:
 | object key (`object_key_for`) | the optimized module's text, and `backend_identity`: the LLVM the binary carries, the host CPU, the settings of `kBackendKnobs` | the backend | any build that hands this module to this backend |
 
 A large program is compiled as several objects side by side
-(`JIT::split_into_parts`, `JIT::compile_parts`), since the pipeline and
+(`JIT::split_into_parts`, `JIT::optimize_parts`), since the pipeline and
 the backend take one thread per module. Past `kPartInstructions` per
-part, up to `kMaxParts`, the functions are shared out: one and what it
-calls directly stay together (the entry's calls aside), so inlining and
-the attributes inferred from a callee see them, and the parts are
-filled largest first. Each thread reads the one bitcode lazily into a
-context of its own, with the bodies its part owns; the globals are
-defined in part 0, constants are copied for folding, and a reference
-across parts takes the indirection a snapshot's does
-(`refer_to_other_object`). The split depends on the program alone, so
-the objects are the same on every machine of a kind;
-`CULEBRA_JIT_PART_SIZE`, which `tests/jit_parts_test.sh` sets to 1, is
-part of the source key. A program in parts has one object key per part:
-the source key lists them all, a hit needs every one, and the object
-keys let an unchanged part skip the backend. AOT, `--emit-llvm` and
-`--jit-faststart` compile the module whole.
+part, up to `kMaxParts`, the functions are shared out: one and the
+callees it calls directly that are under `kJoinCalleeInstructions` stay
+together (the entry's calls aside), so the attributes the pipeline
+infers for a small callee reach its callers' code, and the parts are
+filled largest first. The bound is a balance, not an inlining limit: no
+lowered function is inlined into another (Kauai's 665 direct calls
+between functions survive `-O2`), and a small callee many functions call
+joins them all, so 1,000 instead of 500 put 58% of Kauai in one part.
+Each thread reads the one bitcode lazily into a context of its own, with
+the bodies its part owns. A global is defined in the one part whose code
+uses it, or else in part 0; constants are copied for folding; and only
+what another part uses is exported, reached across parts with the
+indirection a snapshot's reference takes (`refer_to_other_object`). The
+split depends on the program alone, so the objects are the same on
+every machine of a kind; `CULEBRA_JIT_PART_SIZE`, which
+`tests/jit_parts_test.sh` sets to 1, is part of the source key. A
+program in parts has one object key per part: the source key lists them
+all, a hit needs every one, and the object keys let an unchanged part
+skip the backend. AOT, `--emit-llvm` and `--jit-faststart` compile the
+module whole.
+
+The baked preamble splits the same way where CMakeLists.txt declares a
+module's part count (`_baked_parts_<Name>`), one object per part, since
+a module's single-threaded bake is the build's tail: Kauai's took 46 s
+whole and 13 s in eight parts, and the optimized code differs by 264 of
+737,000 instructions (attributes and arguments a call across parts
+cannot see). Its parts are linked by the system linker into the driver
+and `libculebra_rt.a` instead of loaded by ORC (`JIT::ObjectLink`): a
+symbol one part exports is hidden and referenced directly, under
+`<entry>.<name>` so two modules' parts cannot collide in one image, and
+the `.` keeps it off the export lists, which match `culebra_*`.
+`tools/checks/check_baked_preamble.sh` builds and runs a program naming
+two such modules and asserts the driver exports none of their symbols.
 
 `run_program` asks by the source key once the module is lowered
 (`JIT::cached_objects`); a hit links the stored objects and drops the

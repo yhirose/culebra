@@ -11,7 +11,11 @@
 #      module was never needed;
 #   2. `culebra build` of the same program links the module's baked entry
 #      out of libculebra_rt.a, and only that module's;
-#   3. both lanes agree with the executor, which always compiles the source.
+#   3. both lanes agree with the executor, which always compiles the source;
+#   4. a module baked in parts (CMakeLists' _baked_parts_*) is several objects
+#      in one image: a program naming two such modules builds and runs as the
+#      executor does, their parts' symbols colliding neither with each other's
+#      nor with anything else, and the driver exports none of them.
 #
 # A built-in trait unit (__DirTrait) is held to the same three, with a class
 # that defines Dir's five methods as the program that selects it.
@@ -103,11 +107,35 @@ if grep -q '@culebra_preamble___DirTrait()' "$work/baked.ll"; then
   fail=1
 fi
 
+# Kauai and Synth, both baked in parts.
+cat > "$work/parts.cul" <<'EOF2'
+let song = Kauai.new(`
+band Solo {
+  voice Lead  pulse  plays melody  vol 20
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Theme
+}
+section Theme {
+  C  e4 g c'2
+}
+`)
+IO.print("{song.length()} {song.events().size()} {Synth.render(Synth.sine(440.0) * 0.5, 0.01).size()}")
+EOF2
+
 # 3. Executor / JIT / JIT-from-source agree (prints the executor's output).
+# A second argument `no-source` skips the source lane.
 lanes() {
   local vm jit src
   vm=$("$bin" --vm "$work/$1.cul"); jit=$("$bin" --jit "$work/$1.cul")
-  src=$(CULEBRA_PREAMBLE_SOURCE=1 "$bin" --jit "$work/$1.cul")
+  if [[ "${2:-}" == no-source ]]; then
+    src=$vm
+  else
+    src=$(CULEBRA_PREAMBLE_SOURCE=1 "$bin" --jit "$work/$1.cul")
+  fi
   if [[ "$vm" != "$jit" || "$vm" != "$src" ]]; then
     echo "check_baked_preamble FAIL: $1: lanes disagree: vm=[$vm] jit=[$jit] jit-source=[$src]" >&2
     return 1
@@ -150,6 +178,22 @@ if ! grep -qE ' T _?culebra_preamble___DirTrait$' "$work/own.nm"; then
 own_aot=$("$work/own")
 if [[ "$own_aot" != "$own_vm" ]]; then
   echo "check_baked_preamble FAIL: own: AOT printed [$own_aot], executor [$own_vm]" >&2; fail=1; fi
+
+# 4. Modules in parts: the executor and the two compiled lanes agree (no
+#    source lane: lowering Kauai at start-up takes seconds), and the parts'
+#    symbols are hidden (JIT::ObjectLink::linked), so the driver exports none.
+export CULEBRA_AUDIO=off
+parts_vm=$(lanes parts no-source) || fail=1
+aot parts
+parts_aot=$("$work/parts")
+if [[ "$parts_aot" != "$parts_vm" ]]; then
+  echo "check_baked_preamble FAIL: parts: AOT printed [$parts_aot], executor [$parts_vm]" >&2
+  fail=1
+fi
+if nm -g "$bin" | grep -E ' _?culebra_preamble_[A-Za-z_]+\.'; then
+  echo "check_baked_preamble FAIL: the driver exports the symbols above, a part's own (they are hidden: JIT::ObjectLink::linked)" >&2
+  fail=1
+fi
 
 if (( fail )); then
   cat >&2 <<'EOF'

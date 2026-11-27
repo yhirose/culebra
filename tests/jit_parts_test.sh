@@ -16,7 +16,8 @@ export CULEBRA_REQUIRE_EXPLICIT_ENGINE=1
 # What crosses a part: calls and function values, strings and inline caches,
 # globals written from one function and read in another, a throw unwinding
 # through frames of several functions with their defers and drops, a
-# generator, a class and an isolate.
+# generator, a class and an isolate. `big` is past the size that shares its
+# caller's part (JIT::kJoinCalleeInstructions), so its direct call crosses.
 cat > "$TMP/a.cul" <<'EOF'
 let mut count = 0
 
@@ -55,6 +56,26 @@ fn top(n) {
   middle(n)
 }
 
+fn big(n) {
+  let mut s = ""
+  for i in range(n) {
+    s = s + "{i},"
+  }
+  defer {
+    println("leaving big {n}")
+  }
+  throw "big {s.size()}" if n > 2
+  [s.size(), s.upper(), s.trim(), s.split(",").size()]
+}
+
+fn through_big(n) {
+  let held = Noisy()
+  defer {
+    println("leaving through_big {n}")
+  }
+  big(n)
+}
+
 for i in range(6) {
   try {
     println(top(i))
@@ -69,6 +90,12 @@ for v in naturals(3) {
 }
 let worker = Isolate.spawn(fn () { [4, 5].map(|x| Point(x).twice()) })
 println(worker.join())
+println(through_big(2))
+try {
+  println(through_big(5))
+} catch e {
+  println("caught: {e}")
+}
 leaf(9)
 EOF
 

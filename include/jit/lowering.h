@@ -113,7 +113,10 @@ struct Lowering {
         reoptimizable = JIT::cut_big_functions(*mod, opt_level);
         JIT::time_phase("cut", phase_t);
         // A large program is compiled in parts, each optimized on its own.
-        if (!emit_llvm) parts = JIT::split_into_parts(*mod);
+        if (!emit_llvm)
+          parts = JIT::split_into_parts(*mod, JIT::part_count(*mod),
+                                        JIT::ObjectLink::loaded,
+                                        "__culebra_main");
       }
       if (parts) {
         mod.reset();
@@ -200,26 +203,55 @@ struct Lowering {
   // per module, so every module's object links into one binary — and no C
   // main or namespace list. Position-independent, since the driver links it
   // too. Symmetry is by construction: the same Compiler and lowering the
-  // spliced source would go through at start-up.
+  // spliced source would go through at start-up. More than one path compiles
+  // the module in that many parts side by side (JIT::split_into_parts), an
+  // object each, all linked into the image that carries the module.
   static int build_preamble_object(const VmProgram& p,
-                                   const std::string& out_path, int opt_level,
-                                   const std::string& entry) {
+                                   const std::vector<std::string>& out_paths,
+                                   int opt_level, const std::string& entry) {
     using namespace llvm;
+    static constexpr const char* kWho = "culebra build-preamble";
     JIT::ensure_native_target_init();
+    const Triple triple(sys::getDefaultTargetTriple());
     auto ctx = std::make_unique<LLVMContext>();
     auto mod = std::make_unique<Module>(entry, *ctx);
     std::string err;
-    auto tm = JIT::apply_target(*mod, Triple(sys::getDefaultTargetTriple()),
-                                &err, /*pic=*/true);
+    auto tm = JIT::apply_target(*mod, triple, &err, /*pic=*/true);
     if (!tm) {
-      std::fprintf(stderr, "culebra build-preamble: %s\n", err.c_str());
+      std::fprintf(stderr, "%s: %s\n", kWho, err.c_str());
       return 1;
     }
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
     lower_program(jit, p, opt_level > 0, entry.c_str());
-    if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
-    return emit_object_file(p, *tm, *mod, out_path, "culebra build-preamble");
+    if (out_paths.size() == 1) {
+      if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+      return emit_object_file(p, *tm, *mod, out_paths[0], kWho);
+    }
+    auto parts = JIT::split_into_parts(*mod, out_paths.size(),
+                                       JIT::ObjectLink::linked, entry);
+    if (!parts || parts->count != out_paths.size()) {
+      std::fprintf(stderr, "%s: %s splits into %zu parts at most, not %zu\n",
+                   kWho, entry.c_str(), parts ? parts->count : size_t{1},
+                   out_paths.size());
+      return 1;
+    }
+    mod.reset();
+    ctx.reset();
+    auto error = JIT::optimize_parts(
+        *parts, opt_level, [&](size_t i, Module& part) -> std::string {
+          std::string e;
+          auto part_tm = JIT::apply_target(part, triple, &e, /*pic=*/true);
+          if (!part_tm) return e;
+          if (emit_object_file(p, *part_tm, part, out_paths[i], kWho) != 0)
+            return "cannot write " + out_paths[i];
+          return {};
+        });
+    if (!error.empty()) {
+      std::fprintf(stderr, "%s: %s\n", kWho, error.c_str());
+      return 1;
+    }
+    return 0;
   }
 
   // AOT: the same lowering, to a TargetMachine object file instead of ORC,

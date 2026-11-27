@@ -10,7 +10,10 @@
 // (stdlib/preamble_ast.h), which the executor builds its `<stdlib>` module
 // from instead of parsing the source.
 //
-//   culebra_preamble_cc <Name> -o <object> [--ast <records.inc>]
+// With more than one -o it compiles the module in that many parts side by
+// side, an object each (CMakeLists.txt declares how many).
+//
+//   culebra_preamble_cc <Name> -o <object> [-o <object>…] [--ast <records.inc>]
 //   culebra_preamble_cc --check-list <Name>…   exit 1 unless that is the list
 #include <culebra.h>
 #include <stdlib/bindings.h>
@@ -223,14 +226,24 @@ int main(int argc, char** argv) {
       if (!want.count(n)) std::fprintf(stderr, "  unknown to the stdlib: %s\n", n.c_str());
     return 1;
   }
-  if ((argc != 4 && argc != 6) || std::string(argv[2]) != "-o" ||
-      (argc == 6 && std::string(argv[4]) != "--ast")) {
+  std::vector<std::string> outs;
+  std::string ast_out;
+  bool usage = argc < 4 || argc % 2 != 0;
+  for (int i = 2; !usage && i + 1 < argc; i += 2) {
+    std::string flag = argv[i];
+    if (flag == "-o")
+      outs.emplace_back(argv[i + 1]);
+    else if (flag == "--ast" && ast_out.empty())
+      ast_out = argv[i + 1];
+    else
+      usage = true;
+  }
+  if (usage || outs.empty()) {
     std::fprintf(stderr, "usage: culebra_preamble_cc <Name> -o <object> "
-                         "[--ast <records.inc>]\n");
+                         "[-o <object>…] [--ast <records.inc>]\n");
     return 2;
   }
-  std::string name = argv[1], out = argv[3];
-  std::string ast_out = argc == 6 ? argv[5] : "";
+  std::string name = argv[1];
   auto src = std::make_shared<std::string>(source_for(name));
   if (src->empty()) {
     std::fprintf(stderr, "culebra_preamble_cc: no stdlib module '%s'\n",
@@ -323,5 +336,5 @@ int main(int argc, char** argv) {
   if (!ast_out.empty() && !write_ast(*ast, *src, ast_out)) return 1;
   auto prog = culebra::vm::Compiler::compile_stdlib_prologue(*ast);
   return culebra::vm::Lowering::build_preamble_object(
-      prog, out, /*opt_level=*/2, culebra::baked_preamble_symbol(name));
+      prog, outs, /*opt_level=*/2, culebra::baked_preamble_symbol(name));
 }

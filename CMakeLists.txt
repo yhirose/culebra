@@ -2644,6 +2644,12 @@ if(CULEBRA_ENABLE_JIT)
   if(CULEBRA_ENABLE_WEBVIEW)
     list(APPEND _baked_names Desktop)
   endif()
+  # A module whose bake would be the build's tail is compiled in parts side by
+  # side (JIT::split_into_parts), an object each. Whole, Kauai took 46 s,
+  # Synth 9 s and LLM 6 s; in parts 13, 5 and 4.
+  set(_baked_parts_Kauai 8)
+  set(_baked_parts_Synth 2)
+  set(_baked_parts_LLM 2)
   set(_baked_dir "${CMAKE_CURRENT_BINARY_DIR}/baked-preambles")
   file(MAKE_DIRECTORY "${_baked_dir}")
   # Each module's parsed AST comes out of the same run, as data the driver
@@ -2654,6 +2660,15 @@ if(CULEBRA_ENABLE_JIT)
   set(_baked_ast_files "")
   foreach(_n IN LISTS _baked_names)
     set(_o "${_baked_dir}/preamble_${_n}${CMAKE_CXX_OUTPUT_EXTENSION}")
+    set(_outs "${_o}")
+    if(DEFINED _baked_parts_${_n})
+      math(EXPR _last "${_baked_parts_${_n}} - 1")
+      foreach(_k RANGE 1 ${_last})
+        list(APPEND _outs
+             "${_baked_dir}/preamble_${_n}.${_k}${CMAKE_CXX_OUTPUT_EXTENSION}")
+      endforeach()
+    endif()
+    list(TRANSFORM _outs PREPEND "-o;" OUTPUT_VARIABLE _out_args)
     if(_n STREQUAL "__Traits")
       set(_ast_args "")
       set(_ast_out "")
@@ -2664,13 +2679,13 @@ if(CULEBRA_ENABLE_JIT)
       list(APPEND _baked_ast_files "${_ast_out}")
     endif()
     add_custom_command(
-      OUTPUT "${_o}" ${_ast_out}
-      COMMAND culebra_preamble_cc ${_n} -o "${_o}" ${_ast_args}
+      OUTPUT ${_outs} ${_ast_out}
+      COMMAND culebra_preamble_cc ${_n} ${_out_args} ${_ast_args}
       DEPENDS culebra_preamble_cc
               "${CMAKE_CURRENT_SOURCE_DIR}/include/stdlib/preambles.gen.h"
       COMMENT "Baking stdlib preamble ${_n}"
       VERBATIM)
-    list(APPEND _baked_objs "${_o}")
+    list(APPEND _baked_objs ${_outs})
   endforeach()
   # (add_custom_command already marks its outputs GENERATED.)
   set_source_files_properties(${_baked_objs} PROPERTIES EXTERNAL_OBJECT TRUE)
