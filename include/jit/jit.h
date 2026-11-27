@@ -52,6 +52,11 @@
 #include "llvm/Transforms/Utils/Local.h"  // settle_pad_release_tests
 #include "llvm/Transforms/Utils/Cloning.h"  // snapshot_for_reoptimizing
 #include "llvm/Transforms/Utils/ModuleUtils.h"  // nameUnamedGlobals
+#include "llvm/ADT/EquivalenceClasses.h"  // split_into_parts
+#include "llvm/ADT/MapVector.h"  // split_into_parts
+#include "llvm/ADT/StringMap.h"  // split_into_parts
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"  // SimpleCompiler
+#include "llvm/IR/InstIterator.h"  // split_into_parts
 #include "llvm/Bitcode/BitcodeReader.h"  // a snapshot, read back by Reoptimizer
 #include "llvm/Bitcode/BitcodeWriter.h"  // a snapshot, written
 
@@ -690,8 +695,9 @@ struct JIT {
   //                    whatever the lowering, the runtime or the IR pipeline
   //                    were changed to do is in the text.
   //   the source key   the program's source and options, with this very
-  //                    binary (jit_module_name). It names the object key the
-  //                    program came to, so a hit skips the IR pipeline as
+  //                    binary (jit_module_name). It names the object keys the
+  //                    program came to, one per part, so a hit skips the IR
+  //                    pipeline as
   //                    well — for the binary that wrote it and no other.
   //
   // Per-step throughput is unaffected either way: a cached object is the
@@ -715,10 +721,12 @@ struct JIT {
     // stores what the backend made of it.
     void notifyObjectCompiled(const llvm::Module* m,
                               llvm::MemoryBufferRef obj) override {
-      llvm::StringRef key = m->getModuleIdentifier();
-      if (!is_key(key)) return;
-      write(path(key, ".o"), obj.getBuffer());
+      store(m->getModuleIdentifier(), obj.getBuffer());
       evict_if_over_cap();
+    }
+    void store(llvm::StringRef object_key, llvm::StringRef object) {
+      if (!is_key(object_key)) return;
+      write(path(object_key, ".o"), object);
     }
     std::unique_ptr<llvm::MemoryBuffer> getObject(
         const llvm::Module* m) override {
@@ -728,7 +736,7 @@ struct JIT {
     std::unique_ptr<llvm::MemoryBuffer> object(llvm::StringRef object_key) {
       return entry(object_key, ".o");
     }
-    // What the run that compiled `object_key` kept beside the object, under
+    // What was kept under `key` (an object key, or program_key) with
     // `ext`, or null. A hit is touched: eviction goes by age, and an entry
     // every run reads is not the oldest.
     std::unique_ptr<llvm::MemoryBuffer> entry(llvm::StringRef object_key,
@@ -743,39 +751,33 @@ struct JIT {
       return llvm::MemoryBuffer::getMemBufferCopy(
           (*buf)->getBuffer(), (*buf)->getBufferIdentifier());
     }
-    void keep(llvm::StringRef object_key, const char* ext,
-              llvm::StringRef bytes) {
-      if (is_key(object_key)) write(path(object_key, ext), bytes);
+    void keep(llvm::StringRef key, const char* ext, llvm::StringRef bytes) {
+      if (is_key(key)) write(path(key, ext), bytes);
     }
-    // The object key `source_key` last came to, or empty.
-    std::string object_key_of(llvm::StringRef source_key) const {
+    // The object keys `source_key` last came to, one per part of the program,
+    // or none.
+    std::vector<std::string> object_keys_of(llvm::StringRef source_key) const {
+      std::vector<std::string> keys;
       auto buf = llvm::MemoryBuffer::getFile(path(source_key, ".ref"));
-      if (!buf) return {};
-      auto key = (*buf)->getBuffer().trim();
-      return is_key(key) ? key.str() : std::string();
+      if (!buf) return keys;
+      llvm::SmallVector<llvm::StringRef, 32> lines;
+      (*buf)->getBuffer().trim().split(lines, '\n');
+      for (auto line : lines) {
+        if (!is_key(line)) return {};
+        keys.push_back(line.str());
+      }
+      return keys;
     }
-    void remember(llvm::StringRef source_key, llvm::StringRef object_key) {
-      write(path(source_key, ".ref"), object_key);
+    void remember(llvm::StringRef source_key,
+                  const std::vector<std::string>& object_keys) {
+      std::string lines;
+      for (const auto& k : object_keys) lines += k + '\n';
+      write(path(source_key, ".ref"), lines);
     }
 
-   private:
-    std::string path(llvm::StringRef key, const char* ext) const {
-      return dir_ + "/" + key.str() + ext;
-    }
-    // Written beside its name and renamed onto it: a second process running
-    // the same program reads the entry whole or not at all.
-    void write(const std::string& p, llvm::StringRef bytes) {
-      auto tmp = p + "." + std::to_string(llvm::sys::Process::getProcessId());
-      std::ofstream out(tmp, std::ios::binary);
-      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-      out.close();
-      std::error_code ec;
-      if (out) std::filesystem::rename(tmp, p, ec);
-      if (!out || ec) std::filesystem::remove(tmp, ec);
-    }
     // Keep the cache under a soft byte cap by evicting the entries longest
-    // unread. Runs only after a miss writes a new object, so the directory
-    // walk is amortized against a full backend compile.
+    // unread. Runs only after a miss wrote objects, so the directory walk is
+    // amortized against a full backend compile.
     void evict_if_over_cap() {
       namespace fs = std::filesystem;
       std::error_code ec;
@@ -794,6 +796,22 @@ struct JIT {
         auto sz = fs::file_size(path, ec);
         if (fs::remove(path, ec)) total -= sz;
       }
+    }
+
+   private:
+    std::string path(llvm::StringRef key, const char* ext) const {
+      return dir_ + "/" + key.str() + ext;
+    }
+    // Written beside its name and renamed onto it: a second process running
+    // the same program reads the entry whole or not at all.
+    void write(const std::string& p, llvm::StringRef bytes) {
+      auto tmp = p + "." + std::to_string(llvm::sys::Process::getProcessId());
+      std::ofstream out(tmp, std::ios::binary);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      out.close();
+      std::error_code ec;
+      if (out) std::filesystem::rename(tmp, p, ec);
+      if (!out || ec) std::filesystem::remove(tmp, ec);
     }
     std::string dir_;
     uintmax_t max_bytes_ = 512ull * 1024 * 1024;  // 512 MB; CULEBRA_JIT_CACHE_MAX_MB
@@ -881,15 +899,34 @@ struct JIT {
            llvm::toHex(llvm::ArrayRef<uint8_t>(d.data(), 16), /*LowerCase=*/true);
   }
 
-  // The object the program named by `source_key` compiled to under this
-  // binary, or null: a hit stands for the lowered module after the IR pipeline
-  // and the backend both, and `exec` links it in place of running either.
-  static std::unique_ptr<llvm::MemoryBuffer> cached_object(
+  // The objects the program named by `source_key` compiled to under this
+  // binary, or none: a hit stands for the lowered module after the IR pipeline
+  // and the backend both, and `exec` links them in place of running either.
+  static std::vector<std::unique_ptr<llvm::MemoryBuffer>> cached_objects(
       const std::string& source_key) {
+    std::vector<std::unique_ptr<llvm::MemoryBuffer>> objects;
     auto* cache = object_cache();
-    if (!cache || !FileObjectCache::is_key(source_key)) return nullptr;
-    auto object_key = cache->object_key_of(source_key);
-    return object_key.empty() ? nullptr : cache->object(object_key);
+    if (!cache || !FileObjectCache::is_key(source_key)) return objects;
+    for (const auto& key : cache->object_keys_of(source_key)) {
+      auto object = cache->object(key);
+      if (!object) return {};  // a part evicted: compile the program again
+      objects.push_back(std::move(object));
+    }
+    return objects;
+  }
+
+  // A key of the cache made of `text`.
+  static std::string hashed_key(llvm::StringRef text) {
+    return kCacheKeyTag + std::to_string(llvm::xxh3_64bits(text));
+  }
+
+  // The one name of the program those object keys make, which what is kept
+  // beside its objects goes under.
+  static std::string program_key(const std::vector<std::string>& keys) {
+    if (keys.size() == 1) return keys[0];
+    std::string all;
+    for (const auto& k : keys) all += k;
+    return hashed_key(all);
   }
 
   // Past the IR pipeline: name the module by its object key — which is where
@@ -902,7 +939,7 @@ struct JIT {
     if (!cache || !FileObjectCache::is_key(source_key)) return nullptr;
     auto object_key = object_key_for(mod, fast_codegen);
     mod.setModuleIdentifier(object_key);
-    cache->remember(source_key, object_key);
+    cache->remember(source_key, {object_key});
     return cache->object(object_key);
   }
 
@@ -915,12 +952,12 @@ struct JIT {
     int opt_level = 2;
   };
 
-  // The snapshots of the functions past the cut, kept beside the object of
-  // the run that took them: a source-key hit links that run's object, whose
+  // The snapshots of the functions past the cut, kept under the program_key of
+  // the run that took them: a source-key hit links that run's objects, whose
   // symbols are the ones its own snapshots name.
   static constexpr const char* kSnapshotsExt = ".reopt";
 
-  static void keep_snapshots(const llvm::Module& mod,
+  static void keep_snapshots(llvm::StringRef program,
                              const std::vector<Reoptimizable>& snapshots) {
     auto* cache = object_cache();
     if (!cache || snapshots.empty()) return;
@@ -928,7 +965,7 @@ struct JIT {
     for (const auto& s : snapshots)
       bytes += std::format("{} {} {}\n{}{}", s.opt_level, s.name.size(),
                            s.bitcode.size(), s.name, s.bitcode);
-    cache->keep(mod.getModuleIdentifier(), kSnapshotsExt, bytes);
+    cache->keep(program, kSnapshotsExt, bytes);
   }
 
   static std::vector<Reoptimizable> cached_snapshots(
@@ -936,7 +973,9 @@ struct JIT {
     std::vector<Reoptimizable> snapshots;
     auto* cache = object_cache();
     if (!cache) return snapshots;
-    auto buf = cache->entry(cache->object_key_of(source_key), kSnapshotsExt);
+    auto keys = cache->object_keys_of(source_key);
+    if (keys.empty()) return snapshots;
+    auto buf = cache->entry(program_key(keys), kSnapshotsExt);
     if (!buf) return snapshots;
     llvm::StringRef rest = buf->getBuffer();
     while (!rest.empty()) {
@@ -989,14 +1028,14 @@ struct JIT {
     std::string acc = jit_cache_salt();
     acc += fast_codegen ? "|fast|O" : "|O";
     acc += std::to_string(opt_level);
+    acc += "|part" + std::to_string(part_instructions());
     // A source-less module (an embedder's bare AST) can't be keyed — two
     // different programs would share one entry, so don't cache at all.
     for (const auto& m : modules) {
       if (!m.source) return "culebra";
       acc += '|' + *m.source;
     }
-    return std::string(kCacheKeyTag) +
-           std::to_string(llvm::xxh3_64bits(acc));
+    return hashed_key(acc);
   }
 
   // Backend configuration for `--jit-faststart`, in one place because both
@@ -1036,29 +1075,25 @@ struct JIT {
   // throughput for startup latency — a clear win when the hot compute lives
   // in the C++/BLAS runtime (Tensor) rather than in JIT-emitted arithmetic
   // (scalar).
+  // `target`, when given, receives the settings this LLJIT compiles with.
   static std::unique_ptr<llvm::orc::LLJIT> create_jit_instance(
-      bool fast_codegen = false) {
+      bool fast_codegen = false,
+      std::optional<llvm::orc::JITTargetMachineBuilder>* target = nullptr) {
     using namespace llvm;
     orc::LLJITBuilder lb;
-    // Route compilation through a custom compiler when an object cache is
-    // requested, so backend output can be reused across runs. The opt
-    // level is applied here too (instead of the separate JTMB path) to
-    // keep a single place that configures codegen.
-    if (auto* cache = object_cache()) {
-      lb.setCompileFunctionCreator(
-          [fast_codegen, cache](orc::JITTargetMachineBuilder jtmb)
-              -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
-            if (fast_codegen) apply_fast_codegen(jtmb);
-            auto tm = jtmb.createTargetMachine();
-            if (!tm) return tm.takeError();
-            return std::make_unique<orc::TMOwningSimpleCompiler>(
-                std::move(*tm), cache);
-          });
-    } else if (fast_codegen) {
-      auto jtmb = cantFail(orc::JITTargetMachineBuilder::detectHost());
-      apply_fast_codegen(jtmb);
-      lb.setJITTargetMachineBuilder(std::move(jtmb));
-    }
+    // A compiler of our own: it hands the object cache the backend's output
+    // and `target` the settings LLJIT chose for the host.
+    auto* cache = object_cache();
+    lb.setCompileFunctionCreator(
+        [fast_codegen, cache, target](orc::JITTargetMachineBuilder jtmb)
+            -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
+          if (fast_codegen) apply_fast_codegen(jtmb);
+          if (target) target->emplace(jtmb);
+          auto tm = jtmb.createTargetMachine();
+          if (!tm) return tm.takeError();
+          return std::make_unique<orc::TMOwningSimpleCompiler>(std::move(*tm),
+                                                               cache);
+        });
 #ifdef _WIN32
     // Windows LLJIT already defaults to RTDyld; swap in the same layer backed by
     // a memory manager that registers Win64 unwind tables (WinSEHMemoryManager),
@@ -1535,6 +1570,33 @@ struct JIT {
   static constexpr const char* kReoptContext = "__culebra_reopt.ctx";
   static constexpr const char* kReoptRequest = "__culebra_reoptimize";
 
+  // A constant whose address means nothing (a string's bytes): every object
+  // that reads it keeps its own copy, so it stays the pipeline's to merge.
+  static bool address_means_nothing(const llvm::GlobalValue& gv) {
+    auto* var = llvm::dyn_cast<llvm::GlobalVariable>(&gv);
+    return var && var->isConstant() && var->hasInitializer() &&
+           var->hasLocalLinkage() && var->hasAtLeastLocalUnnamedAddr();
+  }
+
+  // A symbol of one object, made another's to resolve.
+  static void export_local(llvm::GlobalValue& own) {
+    if (!own.hasLocalLinkage()) return;
+    own.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    own.setVisibility(llvm::GlobalValue::DefaultVisibility);
+    own.setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::None);
+  }
+
+  // `ref` stands in one object for a symbol of another's: it goes through the
+  // indirection the object format gives such a reference (a GOT entry; COFF's
+  // import pointer, for data the program `defines`).
+  static void refer_to_other_object(llvm::GlobalValue& ref, bool defines,
+                                    bool coff) {
+    ref.setVisibility(llvm::GlobalValue::DefaultVisibility);
+    ref.setDSOLocal(false);
+    if (coff && defines && llvm::isa<llvm::GlobalVariable>(ref))
+      ref.setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+  }
+
   // `f` before the cut as `<f>.opt`, with available_externally copies of what
   // it calls directly and of the constants it reads, so its pipeline inlines
   // and folds as the program's would; the rest declares the program's own
@@ -1589,33 +1651,20 @@ struct JIT {
       if (gv.use_empty()) gv.eraseFromParent();
     }
     // What is left is the program's: each resolves to its symbol in the
-    // program's object, through the indirection the object format gives a
-    // reference to another object (a GOT entry; COFF's import pointer).
+    // program's object.
     const bool coff = Triple(mod.getTargetTriple()).isOSBinFormatCOFF();
     for (auto& gv : snap->global_values()) {
       if (&gv == opt) continue;
       auto* own = mod.getNamedValue(gv.getName());
       assert(own && "a snapshot names a symbol the program lacks");
-      // Save a constant whose address means nothing (a string's bytes), which
-      // the snapshot keeps a copy of: made external, the program's pipeline
-      // could no longer merge it with its duplicates.
-      auto* var = dyn_cast<GlobalVariable>(&gv);
-      if (var && var->isConstant() && !var->isDeclaration() &&
-          own->hasLocalLinkage() && own->hasAtLeastLocalUnnamedAddr()) {
-        var->setLinkage(GlobalValue::PrivateLinkage);
+      if (!gv.isDeclaration() && address_means_nothing(*own)) {
+        cast<GlobalVariable>(gv).setLinkage(GlobalValue::PrivateLinkage);
         continue;
       }
-      if (own->hasLocalLinkage()) {
-        own->setLinkage(GlobalValue::ExternalLinkage);
-        own->setVisibility(GlobalValue::DefaultVisibility);
-        own->setUnnamedAddr(GlobalValue::UnnamedAddr::None);
-      }
+      export_local(*own);
       if (!gv.isDeclaration())
         gv.setLinkage(GlobalValue::AvailableExternallyLinkage);
-      gv.setVisibility(GlobalValue::DefaultVisibility);
-      gv.setDSOLocal(false);
-      if (coff && isa<GlobalVariable>(gv) && !own->isDeclaration())
-        gv.setDLLStorageClass(GlobalValue::DLLImportStorageClass);
+      refer_to_other_object(gv, !own->isDeclaration(), coff);
     }
     assert(!verifyModule(*snap, &errs()));
     std::string bitcode;
@@ -6030,14 +6079,13 @@ struct JIT {
       // this binary (a hit skips the pipeline), then its optimized text.
       const std::string source_key =
           object_cache()
-              ? kCacheKeyTag + std::to_string(xxh3_64bits(
-                                   jit_cache_salt() + "|reopt|O" +
+              ? hashed_key(jit_cache_salt() + "|reopt|O" +
                                    std::to_string(f.from.opt_level) + '|' +
-                                   f.from.bitcode))
+                                   f.from.bitcode)
               : std::string("reopt");
       Error err = Error::success();
-      if (auto object = cached_object(source_key)) {
-        err = jit_.addObjectFile(std::move(object));
+      if (auto objects = cached_objects(source_key); !objects.empty()) {
+        err = jit_.addObjectFile(std::move(objects.front()));
       } else {
         auto ctx = std::make_unique<LLVMContext>();
         auto mod = parseBitcodeFile(
@@ -6084,12 +6132,216 @@ struct JIT {
     std::once_flag joined_;
   };
 
-  // `cached` is the module's object from an earlier run (cached_object, or
-  // keyed_object): given one, it is linked and the module is dropped unread.
+  // A large program is compiled as several objects side by side, each from its
+  // own copy of the module in its own context (docs/internals/vm.md §7). How
+  // many depends on the program alone, never on the machine, so the objects
+  // and their cache keys are the same everywhere. CULEBRA_JIT_PART_SIZE, the
+  // instructions a part is given, is for tests.
+  static constexpr size_t kPartInstructions = 100'000;
+  static constexpr size_t kMaxParts = 32;
+  static size_t part_instructions() {
+    static const size_t n = [] {
+      const char* env = std::getenv("CULEBRA_JIT_PART_SIZE");
+      size_t v = env ? std::strtoull(env, nullptr, 10) : 0;
+      return v ? v : kPartInstructions;
+    }();
+    return n;
+  }
+
+  // A module split into parts: its one bitcode, and which part has the body
+  // of each function. Part 0 also defines the globals.
+  struct Parts {
+    std::string bitcode;
+    llvm::StringMap<size_t> owner;
+    size_t count = 0;
+  };
+
+  // `mod` as parts, or none when it is to be compiled whole. A function and
+  // what it calls directly go into one part, so inlining and the attributes
+  // inferred from a callee see what they would see whole; the entry's own
+  // calls are left out, which would join much of the program.
+  static std::optional<Parts> split_into_parts(llvm::Module& mod) {
+    using namespace llvm;
+    size_t count = std::min<size_t>(
+        kMaxParts, mod.getInstructionCount() / part_instructions());
+    if (count < 2) return std::nullopt;
+    const Function* entry = mod.getFunction("__culebra_main");
+    EquivalenceClasses<const Function*> classes;
+    for (auto& f : mod) {
+      if (f.isDeclaration()) continue;
+      classes.insert(&f);
+      if (&f == entry) continue;
+      for (auto& inst : instructions(f))
+        if (auto* call = dyn_cast<CallBase>(&inst))
+          if (auto* callee = call->getCalledFunction();
+              callee && !callee->isDeclaration() && callee != entry)
+            classes.unionSets(&f, callee);
+    }
+    // Largest class first onto the lightest part, ties in the module's order:
+    // the same program splits the same way every run.
+    MapVector<const Function*, size_t> sizes;
+    for (auto& f : mod)
+      if (!f.isDeclaration())
+        sizes[classes.getLeaderValue(&f)] += f.getInstructionCount();
+    count = std::min(count, sizes.size());
+    if (count < 2) return std::nullopt;
+    std::vector<std::pair<const Function*, size_t>> order(sizes.begin(),
+                                                          sizes.end());
+    std::stable_sort(order.begin(), order.end(), [](auto& x, auto& y) {
+      return x.second > y.second;
+    });
+    std::vector<size_t> weight(count, 0);
+    DenseMap<const Function*, size_t> part_of;
+    for (auto& [leader, n] : order) {
+      auto i = std::min_element(weight.begin(), weight.end()) - weight.begin();
+      weight[i] += n;
+      part_of[leader] = static_cast<size_t>(i);
+    }
+    Parts parts;
+    parts.count = count;
+    nameUnamedGlobals(mod);
+    for (auto& gv : mod.global_values()) {
+      assert(!gv.hasAppendingLinkage() && !gv.isThreadLocal());
+      if (!address_means_nothing(gv)) export_local(gv);
+    }
+    for (auto& f : mod)
+      if (!f.isDeclaration())
+        parts.owner[f.getName()] = part_of.lookup(classes.getLeaderValue(&f));
+    raw_string_ostream os(parts.bitcode);
+    WriteBitcodeToFile(mod, os);
+    os.flush();
+    return parts;
+  }
+
+  // Part `i`: the bodies it owns are read, the rest of the program declared.
+  static llvm::Expected<std::unique_ptr<llvm::Module>> read_part(
+      const Parts& parts, size_t i, llvm::LLVMContext& ctx) {
+    using namespace llvm;
+    auto mod = getLazyBitcodeModule(
+        MemoryBufferRef(parts.bitcode, "culebra"), ctx);
+    if (!mod) return mod.takeError();
+    const bool coff = Triple((*mod)->getTargetTriple()).isOSBinFormatCOFF();
+    for (auto& f : **mod) {
+      if (f.isDeclaration()) continue;
+      if (parts.owner.lookup(f.getName()) == i) {
+        if (auto err = f.materialize()) return std::move(err);
+      } else {
+        f.deleteBody();
+        refer_to_other_object(f, /*defines=*/true, coff);
+      }
+    }
+    if (auto err = (*mod)->materializeAll()) return std::move(err);
+    for (auto& g : (*mod)->globals()) {
+      if (i == 0 || g.isDeclaration() || address_means_nothing(g)) continue;
+      // A constant's value is still there to fold from.
+      if (g.isConstant()) {
+        g.setLinkage(GlobalValue::AvailableExternallyLinkage);
+      } else {
+        g.setInitializer(nullptr);
+        g.setLinkage(GlobalValue::ExternalLinkage);
+      }
+      refer_to_other_object(g, /*defines=*/true, coff);
+    }
+    return mod;
+  }
+
+  // Optimizes and compiles each part, on as many threads as the machine has
+  // cores for, and keeps them in the object cache as `cached_objects` and
+  // `cached_snapshots` read them.
+  static std::vector<std::unique_ptr<llvm::MemoryBuffer>> compile_parts(
+      const Parts& parts, int opt_level, const std::string& source_key,
+      const std::vector<Reoptimizable>& snapshots,
+      std::chrono::steady_clock::time_point& phase_t) {
+    using namespace llvm;
+    std::optional<orc::JITTargetMachineBuilder> target;
+    create_jit_instance(/*fast_codegen=*/false, &target);
+    assert(target);
+    auto* cache =
+        FileObjectCache::is_key(source_key) ? object_cache() : nullptr;
+    struct Part {
+      std::unique_ptr<MemoryBuffer> object;
+      std::string key;
+      std::string error;
+      bool compiled = false;
+    };
+    std::vector<Part> done(parts.count);
+    auto compile = [&](size_t i) {
+      Part& out = done[i];
+      LLVMContext ctx;
+      auto mod = read_part(parts, i, ctx);
+      if (!mod) {
+        out.error = toString(mod.takeError());
+        return;
+      }
+      optimize_module(**mod, opt_level);
+      if (cache) {
+        out.key = object_key_for(**mod, /*fast_codegen=*/false);
+        out.object = cache->object(out.key);
+        if (out.object) return;
+      }
+      auto builder = *target;
+      auto tm = builder.createTargetMachine();
+      if (!tm) {
+        out.error = toString(tm.takeError());
+        return;
+      }
+      auto object = orc::SimpleCompiler(**tm)(**mod);
+      if (!object) {
+        out.error = toString(object.takeError());
+        return;
+      }
+      out.object = std::move(*object);
+      out.compiled = true;
+    };
+    std::atomic<size_t> next = 0;
+    auto work = [&] {
+      for (size_t i; (i = next++) < parts.count;) compile(i);
+    };
+    // LLVM's pass timers are one per process, so a timed run takes turns.
+    if (time_passes()) TimePassesIsEnabled = true;
+    const size_t threads =
+        time_passes()
+            ? 1
+            : std::min<size_t>(
+                  parts.count,
+                  heavyweight_hardware_concurrency().compute_thread_count());
+    {
+      // This thread is one of them; each has its 16 MB of stack.
+      std::vector<SizedThread> others;
+      for (size_t t = 1; t < threads; ++t) others.emplace_back(work);
+      work();
+      for (auto& t : others) t.join();
+    }
+    std::vector<std::unique_ptr<MemoryBuffer>> objects;
+    std::vector<std::string> keys;
+    bool compiled = false;
+    for (auto& p : done) {
+      if (!p.error.empty())
+        report_fatal_error(StringRef(p.error), /*gen_crash_diag=*/false);
+      compiled |= p.compiled;
+      if (cache) {
+        if (p.compiled) cache->store(p.key, p.object->getBuffer());
+        keys.push_back(p.key);
+      }
+      objects.push_back(std::move(p.object));
+    }
+    if (cache) {
+      if (compiled) cache->evict_if_over_cap();
+      keep_snapshots(program_key(keys), snapshots);
+      cache->remember(source_key, keys);
+    }
+    time_phase(compiled ? "optimize" : "cached", phase_t);
+    return objects;
+  }
+
+  // `objects` are the program's, from an earlier run (cached_objects,
+  // keyed_object) or compiled in parts: given any, they are linked and the
+  // module is dropped unread.
   static void exec(std::unique_ptr<llvm::LLVMContext> ctx,
                    std::unique_ptr<llvm::Module> mod,
                    bool fast_codegen = false,
-                   std::unique_ptr<llvm::MemoryBuffer> cached = nullptr,
+                   std::vector<std::unique_ptr<llvm::MemoryBuffer>>
+                       objects = {},
                    std::vector<Reoptimizable> reoptimizable = {}) {
     using namespace llvm;
     auto phase_t = std::chrono::steady_clock::now();
@@ -6109,10 +6361,11 @@ struct JIT {
     // this LLJIT, and one still running when the code is freed returns into
     // unmapped memory.
     ScriptTeardownGuard script_teardown_guard;
-    if (cached) {
+    if (!objects.empty()) {
       mod.reset();
       ctx.reset();
-      cantFail(jit->addObjectFile(std::move(cached)));
+      for (auto& object : objects)
+        cantFail(jit->addObjectFile(std::move(object)));
     } else {
       orc::ThreadSafeContext tsctx(std::move(ctx));
       // The backend's passes run under ORC's legacy pass manager, which reads

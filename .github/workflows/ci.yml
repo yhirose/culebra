@@ -1898,6 +1898,11 @@ jobs:
           fi
           echo "JIT_REOPT_PASS"
 
+      # A program compiled as several objects: strings, caches and calls
+      # across them through RTDyld. Fails the job, as the step above does.
+      - name: JIT — a program compiled in parts
+        run: timeout 900 bash tests/jit_parts_test.sh ./build-win-jit/culebra.exe
+
       # The width gate (see the job comment above): its own configure, in the
       # same runner, so it shares the msys2 toolchain install above instead of
       # paying for a second Windows VM.

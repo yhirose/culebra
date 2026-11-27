@@ -340,7 +340,9 @@ vm_cases 191
 # optnone + noinline, read off the IR; 0.15 s).
 # 44 since sys_exit_test (Sys.exit from nine threads at once ends the process
 # once, and an open file and TL_PROFILE's table survive it; 1.4 s).
-ctest.entries 44
+# 45 since jit_parts_test (a program --jit compiles in parts, side by side,
+# is the run the whole module gives, cold and from the cache; 5 s).
+ctest.entries 45
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.

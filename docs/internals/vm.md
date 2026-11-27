@@ -1946,8 +1946,26 @@ it lets a run skip would have read:
 | source key (`jit_module_name`) | the program's source and options, and this binary's path, size and time | the IR pipeline and the backend | the binary that wrote it |
 | object key (`object_key_for`) | the optimized module's text, and `backend_identity`: the LLVM the binary carries, the host CPU, the settings of `kBackendKnobs` | the backend | any build that hands this module to this backend |
 
+A large program is compiled as several objects side by side
+(`JIT::split_into_parts`, `JIT::compile_parts`), since the pipeline and
+the backend take one thread per module. Past `kPartInstructions` per
+part, up to `kMaxParts`, the functions are shared out: one and what it
+calls directly stay together (the entry's calls aside), so inlining and
+the attributes inferred from a callee see them, and the parts are
+filled largest first. Each thread reads the one bitcode lazily into a
+context of its own, with the bodies its part owns; the globals are
+defined in part 0, constants are copied for folding, and a reference
+across parts takes the indirection a snapshot's does
+(`refer_to_other_object`). The split depends on the program alone, so
+the objects are the same on every machine of a kind;
+`CULEBRA_JIT_PART_SIZE`, which `tests/jit_parts_test.sh` sets to 1, is
+part of the source key. A program in parts has one object key per part:
+the source key lists them all, a hit needs every one, and the object
+keys let an unchanged part skip the backend. AOT, `--emit-llvm` and
+`--jit-faststart` compile the module whole.
+
 `run_program` asks by the source key once the module is lowered
-(`JIT::cached_object`); a hit links the stored object and drops the
+(`JIT::cached_objects`); a hit links the stored objects and drops the
 module unread. On a miss it runs the pipeline and asks again by the
 object key (`JIT::keyed_object`), which also records the object key
 under the source key and names the module by it — the name the compile
@@ -1977,9 +1995,13 @@ built binary pulls the archive member.
 
 What the rest of a start-up costs is read with `CULEBRA_JIT_TIME_PASSES`:
 the four phases (lower, optimize, codegen, run) and LLVM's own per-pass
-report for the IR pipeline and the backend. A cache hit reports
+report for the IR pipeline and the backend. A program in parts is timed
+one part at a time, and reports `split`, then `optimize` for the
+pipeline and the backend of all its parts. A cache hit reports
 `cached` — in place of `optimize` when the source key answered, after it
-when the object key did — and `codegen` is then the object's link.
+when the object key did (a program in parts reports it in place of
+`optimize` either way, and only when every part hit) — and `codegen` is
+then the objects' link.
 Execution is a few
 milliseconds on any file of `tests/`; the backend is the larger half of
 the rest, and a flat script — one function, its top-level slots and the

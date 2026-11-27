@@ -98,31 +98,47 @@ struct Lowering {
     // along with the backend, and the object key after it, which skips the
     // backend alone. --emit-llvm prints the pipeline's output and asks neither.
     // The snapshots of the functions past the cut come from the run whose
-    // object is linked: a source-key hit reads that run's.
-    auto cached = emit_llvm ? nullptr : JIT::cached_object(source_key);
+    // objects are linked: a source-key hit reads that run's.
+    std::vector<std::unique_ptr<MemoryBuffer>> objects;
+    if (!emit_llvm) objects = JIT::cached_objects(source_key);
     std::vector<JIT::Reoptimizable> reoptimizable;
-    if (cached) {
+    if (!objects.empty()) {
       reoptimizable = JIT::cached_snapshots(source_key);
+      JIT::time_phase("cached", phase_t);
     } else {
+      std::optional<JIT::Parts> parts;
       if (opt_level > 0) {
         // Here alone: the baked preamble and `culebra build` pay their
         // compile once, at build, and run many times.
         reoptimizable = JIT::cut_big_functions(*mod, opt_level);
         JIT::time_phase("cut", phase_t);
-        JIT::optimize_module(*mod, opt_level);
+        // A large program is compiled in parts, each optimized on its own.
+        if (!emit_llvm) parts = JIT::split_into_parts(*mod);
       }
-      JIT::time_phase("optimize", phase_t);
-      if (!emit_llvm) {
-        cached = JIT::keyed_object(*mod, source_key, fast_codegen);
-        JIT::keep_snapshots(*mod, reoptimizable);
+      if (parts) {
+        mod.reset();
+        ctx.reset();
+        JIT::time_phase("split", phase_t);
+        objects = JIT::compile_parts(*parts, opt_level, source_key,
+                                     reoptimizable, phase_t);
+      } else {
+        if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+        JIT::time_phase("optimize", phase_t);
+        if (!emit_llvm) {
+          auto object = JIT::keyed_object(*mod, source_key, fast_codegen);
+          JIT::keep_snapshots(mod->getModuleIdentifier(), reoptimizable);
+          if (object) {
+            objects.push_back(std::move(object));
+            JIT::time_phase("cached", phase_t);
+          }
+        }
       }
     }
-    if (cached) JIT::time_phase("cached", phase_t);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
     } else {
       JIT::exec(std::move(ctx), std::move(mod), fast_codegen,
-                std::move(cached), std::move(reoptimizable));
+                std::move(objects), std::move(reoptimizable));
     }
   }
 

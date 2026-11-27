@@ -2482,6 +2482,12 @@ add_test(NAME jit_cache_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_cache_test.sh
                  $<TARGET_FILE:culebra>)
 
+# A large program compiled in parts under --jit is the run the whole module
+# gives (forced onto small programs by CULEBRA_JIT_PART_SIZE).
+add_test(NAME jit_parts_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_parts_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # misc/one_at_a_time.sh, the lock around the heavy lanes: two processes queue,
 # and a command already under a lock that asks for it again does not wait on
 # itself. Drives the script alone; no binary.
