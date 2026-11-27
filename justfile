@@ -610,6 +610,11 @@ coverage: coverage-build
 # ASan's redzones widen every frame. The smokes run first and both parts run
 # before the recipe fails, so a red sweep cannot hide what the smokes found.
 # LDFLAGS joins the sanitizer's link flags (CI passes mold).
+# Manual poisoning is off: an LLVM ADT a culebra file instantiates (the
+# BumpPtrAllocator inside EquivalenceClasses) is compiled with ASan's
+# annotations, the linker keeps that copy for the uninstrumented libLLVM too,
+# and LLVMContext's own allocations then land on slabs nothing unpoisons.
+# culebra poisons nothing itself.
 [doc("ASan+UBSan build, then the embedding smokes, the vm/jit sweep and gc-stress on it, with slab passthrough")]
 [group("test")]
 asan *LDFLAGS:
@@ -619,7 +624,7 @@ asan *LDFLAGS:
 _asan *LDFLAGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    export ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=0
+    export ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=0:allow_user_poisoning=0
     export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
     san="-fsanitize=address,undefined"
     mkdir -p build-asan
