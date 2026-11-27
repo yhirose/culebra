@@ -84,8 +84,11 @@ third=$!
 within 10 sh -c 'until grep -q queued "$1"; do sleep 0.01; done' _ "$TMP/third.err"
 grep -q "held by the holder's job (since " "$TMP/third.err" \
   || fail "the waiting message did not name the holder: $(cat "$TMP/third.err")"
+"$LOCK_SH" --waiters >"$TMP/waiters" || fail "--waiters found no waiter while one waited"
+grep -q . "$TMP/waiters" || fail "--waiters printed nothing"
 touch "$TMP/let-go"
 wait "$holder" "$third"
+"$LOCK_SH" --waiters >/dev/null && fail "--waiters still lists a command that has the lock"
 
 # A lock in a folder that is not there fails at once, naming the folder; it
 # does not turn into a lock at /, waiting.

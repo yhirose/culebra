@@ -30,7 +30,11 @@
 # Whoever takes a lock notes itself beside it ($lock.who: its pid, folder,
 # command or CULEBRA_LOCK_LABEL, and since when), and a command that has to wait
 # says who that is: the wait may be for another checkout, or another project
-# that takes this lock around its own heavy jobs.
+# that takes this lock around its own heavy jobs. A command that waits also
+# notes itself ($lock.waiting.<pid>) until it has the lock, and
+# `one_at_a_time.sh --waiters` lists them (exit 1 when none): another project
+# that runs one heavy job after another under this lock asks it between its
+# jobs and lets a waiting build go first.
 #
 # Escape hatch: CULEBRA_GATE_LOCK=0 (or "off") runs unlocked. The fast inner
 # loop (`just dev` / `just test-dev`) is deliberately NOT wrapped: it has to
@@ -38,20 +42,23 @@
 # running.
 #
 # Usage: one_at_a_time.sh [--lock <path>] [--wait-msg <text>] <command> [args...]
+#        one_at_a_time.sh [--lock <path>] --waiters
 
 set -euo pipefail
 
 lock="${CULEBRA_LOCK_PATH:-${TMPDIR:-/tmp}/culebra-heavy-lane.lock}"
 wait_msg="waiting: another culebra build/gate holds this machine…"
+list_waiters=
 while [ $# -gt 0 ]; do
   case "$1" in
     --lock) lock="${2:?--lock needs a path}"; shift 2 ;;
     --wait-msg) wait_msg="${2:?--wait-msg needs a text}"; shift 2 ;;
+    --waiters) list_waiters=1; shift ;;
     *) break ;;
   esac
 done
 
-if [ $# -eq 0 ]; then
+if [ $# -eq 0 ] && [ -z "$list_waiters" ]; then
   echo "usage: one_at_a_time.sh [--lock <path>] [--wait-msg <text>] <command> [args...]" >&2
   exit 2
 fi
@@ -64,6 +71,15 @@ esac
 # (macOS) as one lock.
 lockdir="$(cd "$(dirname "$lock")" && pwd -P)" || exit 1
 lock="$lockdir/$(basename "$lock")"
+
+if [ -n "$list_waiters" ]; then
+  found=1
+  for f in "$lock".waiting.*; do
+    [ -e "$f" ] || continue
+    if kill -0 "${f##*.}" 2>/dev/null; then cat "$f"; found=0; else rm -f "$f"; fi
+  done
+  exit "$found"
+fi
 case ":${CULEBRA_LOCKS_HELD:-}:" in
   *":$lock:"*) exec "$@" ;;
 esac
@@ -88,15 +104,18 @@ waiting() {
 label="${CULEBRA_LOCK_LABEL:-$PWD: $*}"
 unset CULEBRA_LOCK_LABEL
 label="$(printf '%s' "$label" | tr '\n' ' ' | cut -c1-200)"
-# Runs under the lock, notes who it is and gives its place to the command.
-note='printf "%s %s (since %s)\n" "$$" "$1" "$(date +%H:%M:%S)" >"$2"; shift 2; exec "$@"'
+# Runs under the lock: notes who it is, is no longer a waiter, and gives its
+# place to the command. The waiter's note is named by this shell's pid, which
+# the exec below keeps until the lock is taken.
+note='printf "%s %s (since %s)\n" "$$" "$1" "$(date +%H:%M:%S)" >"$2"; rm -f "$3"; shift 3; exec "$@"'
+waitfile="$lock.waiting.$$"
 
 if command -v lockf >/dev/null 2>&1; then
-  lockf -k -s -t 0 "$lock" true || waiting
-  exec lockf -k "$lock" sh -c "$note" note "$label" "$lock.who" "$@"
+  lockf -k -s -t 0 "$lock" true || { waiting; printf '%s\n' "$label" >"$waitfile"; }
+  exec lockf -k "$lock" sh -c "$note" note "$label" "$lock.who" "$waitfile" "$@"
 elif command -v flock >/dev/null 2>&1; then
-  flock -n "$lock" true || waiting
-  exec flock "$lock" sh -c "$note" note "$label" "$lock.who" "$@"
+  flock -n "$lock" true || { waiting; printf '%s\n' "$label" >"$waitfile"; }
+  exec flock "$lock" sh -c "$note" note "$label" "$lock.who" "$waitfile" "$@"
 else
   exec "$@"
 fi
