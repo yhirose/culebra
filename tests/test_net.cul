@@ -125,9 +125,15 @@ assert_true(cmsg.contains("closed socket"))
 l.close()  // close is idempotent
 
 // --- connect failures raise NetError (message is OS-worded, so kind only) ---
+// A port just let go of on loopback refuses the connection on any machine. A
+// name that cannot exist (".invalid") would depend on the resolver: a filtering
+// one answers it with an address of its own, and the connect succeeds.
+let gone = Net.listen(0, host: "127.0.0.1")
+let gone_port = gone.port
+gone.close()
 let mut fkind = ""
 try {
-  Net.connect("no-such-host.invalid", 80, timeout: 2000)
+  Net.connect("127.0.0.1", gone_port, timeout: 2000)
 } catch e {
   fkind = e.kind
 }
@@ -193,9 +199,12 @@ u3.close()
 // --- DNS: a numeric address resolves to itself (no lookup, so offline-safe) ---
 assert_eq(Net.resolve("127.0.0.1"), ["127.0.0.1"])
 assert_true(Net.resolve("::1").size() > 0)
+// A label of 64 octets is past DNS's 63, so the resolver refuses the name
+// before any query: a filtering resolver answers even ".invalid" with an
+// address of its own.
 let mut rkind = ""
 try {
-  Net.resolve("no-such-host.invalid")
+  Net.resolve("{"a".repeat(64)}.invalid")
 } catch e {
   rkind = e.kind
 }
