@@ -106,16 +106,18 @@ unset CULEBRA_LOCK_LABEL
 label="$(printf '%s' "$label" | tr '\n' ' ' | cut -c1-200)"
 # Runs under the lock: notes who it is, is no longer a waiter, and gives its
 # place to the command. The waiter's note is named by this shell's pid, which
-# the exec below keeps until the lock is taken.
+# the exec below keeps until the lock is taken. The shell is this one's bash,
+# not sh: dash (Ubuntu's sh) drops the variables bash exports functions in
+# (BASH_FUNC_name%%), so the command would lose them on Linux alone.
 note='printf "%s %s (since %s)\n" "$$" "$1" "$(date +%H:%M:%S)" >"$2"; rm -f "$3"; shift 3; exec "$@"'
 waitfile="$lock.waiting.$$"
 
 if command -v lockf >/dev/null 2>&1; then
   lockf -k -s -t 0 "$lock" true || { waiting; printf '%s\n' "$label" >"$waitfile"; }
-  exec lockf -k "$lock" sh -c "$note" note "$label" "$lock.who" "$waitfile" "$@"
+  exec lockf -k "$lock" "$BASH" -c "$note" note "$label" "$lock.who" "$waitfile" "$@"
 elif command -v flock >/dev/null 2>&1; then
   flock -n "$lock" true || { waiting; printf '%s\n' "$label" >"$waitfile"; }
-  exec flock "$lock" sh -c "$note" note "$label" "$lock.who" "$waitfile" "$@"
+  exec flock "$lock" "$BASH" -c "$note" note "$label" "$lock.who" "$waitfile" "$@"
 else
   exec "$@"
 fi
