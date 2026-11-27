@@ -6553,6 +6553,7 @@ setters, so one reads as a single expression:
 | `mat.detail(tex, us, vs, strength = 1.0, masked = false) -> Material` | a detail texture: `tex` repeated `us` × `vs` times across the mesh's own UVs (`uv()` does not move it) and added to the texture's colour about grey 128, times `strength`; `masked` makes the texture's alpha where it applies (below); `nil` removes it |
 | `mat.opacity(a) -> Material` | 0–255; below 255 the surface is transparent |
 | `mat.cutout(threshold) -> Material` | discard where coverage (opacity × texture alpha) is below it (a leaf card); 0 turns it off |
+| `mat.distance_fade(gone, whole) -> Material` | dither the surface away with its distance from the eye: none of its pixels at `gone`, all of them at `whole`, a 4×4 ordered dither between; `gone` beyond `whole` fades it out going away (below); equal turns it off (default `0, 0`; the shadow passes ignore it) |
 | `mat.blend(name) -> Material` | how a transparent surface meets what is behind it: `"over"` (default), `"add"` (lamps, glows), `"multiply"`, `"screen"` |
 | `mat.emissive(r, g, b, k = 1.0) -> Material` | light the surface gives off, added after lighting (it feeds the bloom) |
 | `mat.unlit(on = true) -> Material` | the base colour as is — no light, shadow or reflection (a mirror image, a decal) |
@@ -6588,6 +6589,23 @@ let ripples = view.texture(Scene.Image.new(64, 64).fill(128, 128, 128).noise(1, 
 let ground = view.add_material().unlit()
   .texture(tile)                                # alpha 255 on water
   .detail(ripples, 50.0, 50.0, strength: 0.4, masked: true)
+```
+
+A distance fade crossfades two levels of detail of one thing in a band
+instead of switching them at a line. Give the near level
+`distance_fade(5000.0, 4500.0)` and the far one `distance_fade(4500.0, 5000.0)`,
+and draw both wherever the band may reach: a fading-out surface reads each
+threshold of the dither as its complement, so the pair with the two distances
+swapped keeps every pixel exactly once, the far level's share growing with the
+distance. Both stay opaque surfaces (they write depth and sort as any other),
+which `opacity` could not do. The pattern is fixed to the target's pixels, so
+it does not crawl as the eye moves, and a supersample of 4 averages all sixteen
+thresholds into each output pixel (2, four of them).
+
+```culebra
+# doctest: skip
+let near = view.add_material().unlit().distance_fade(5000.0, 4500.0)   # outlines, gone past 5 km
+let far = view.add_material().unlit().distance_fade(4500.0, 5000.0)    # boxes, whole from 5 km
 ```
 
 A surface is transparent when its opacity (node × material) is below 255 or

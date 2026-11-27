@@ -6321,6 +6321,7 @@ lights.build()
 | `mat.detail(tex, us, vs, strength = 1.0, masked = false) -> Material` | 細部のテクスチャ。`tex`をメッシュ自身のUVで`us` × `vs`回繰り返して貼り（`uv()`では動かない）、テクスチャの色に灰色128を中心として`strength`倍で足す。`masked`でテクスチャのαが効く所を決める（下記）。`nil`で外す |
 | `mat.opacity(a) -> Material` | 0–255。255未満で透過面になる |
 | `mat.cutout(threshold) -> Material` | 被覆（opacity × テクスチャalpha）がこれ未満のピクセルを捨てる（葉のカード）。0でoff |
+| `mat.distance_fade(gone, whole) -> Material` | 目からの距離で面をディザで消す。`gone`で画素を全部捨て、`whole`で全部残し、その間は4×4の組織的ディザ。`gone`が`whole`より遠ければ、遠ざかるほど消える（下）。等しければoff（既定は`0, 0`。影パスには効かない） |
 | `mat.blend(name) -> Material` | 透過面が背後と混ざる方法: `"over"`（既定）、`"add"`（ランプ、光）、`"multiply"`、`"screen"` |
 | `mat.emissive(r, g, b, k = 1.0) -> Material` | 面が発する光。ライティングの後に加算される（bloomに乗る） |
 | `mat.unlit(on = true) -> Material` | 基本色をそのまま — 光も影も反射も無し（ミラー像、デカール） |
@@ -6354,6 +6355,20 @@ let ripples = view.texture(Scene.Image.new(64, 64).fill(128, 128, 128).noise(1, 
 let ground = view.add_material().unlit()
   .texture(tile)                                # 水の所はα 255
   .detail(ripples, 50.0, 50.0, strength: 0.4, masked: true)
+```
+
+距離のフェードは、1つの物の2つの細かさの段を、線で切り替えずに帯の中で混ぜます。
+近い段に`distance_fade(5000.0, 4500.0)`、遠い段に`distance_fade(4500.0, 5000.0)`を与え、
+帯にかかり得る所では両方を描きます。遠ざかるほど消える面はディザの閾値を裏返して読むので、
+2つの距離を入れ替えた組は、どの画素もちょうど1回だけ残し、遠い段の割合が距離とともに
+増えます。どちらも不透明な面のまま（深度を書き、ほかの面と同じに並ぶ）で、これは
+`opacity`ではできません。模様は描画先の画素に固定なので、目が動いても這い回らず、
+スーパーサンプル4なら出力の1画素が16の閾値をすべて平均します（2なら4つ）。
+
+```culebra
+# doctest: skip
+let near = view.add_material().unlit().distance_fade(5000.0, 4500.0)   # 輪郭。5 kmの先で消える
+let far = view.add_material().unlit().distance_fade(4500.0, 5000.0)    # 箱。5 kmから全部
 ```
 
 面は、不透明度（node × material）が255未満か、blendが`"over"`以外なら透過面です。

@@ -479,7 +479,9 @@ ctest.entries 45
 # 1264 since the Synth guide plays from a MIDI controller, in en and ja
 # (its two loops skip: they need a MIDI device).
 # 1266 since Synth.Mono in stdlib, in en and ja (one voice as a melody).
-docs.blocks 1266
+# 1268 since Scene's distance_fade, in en and ja (a pair of levels
+# crossfading in a band; skipped, it needs a window).
+docs.blocks 1268
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -679,6 +679,7 @@ mat.normal_map(tex, strength = 1.0) -> Material
 mat.detail(tex, us, vs, strength = 1.0, masked = false) -> Material
 mat.opacity(a) -> Material
 mat.cutout(threshold) -> Material
+mat.distance_fade(gone, whole) -> Material
 mat.blend(name) -> Material
 mat.emissive(r, g, b, k = 1.0) -> Material
 mat.unlit(on = true) -> Material

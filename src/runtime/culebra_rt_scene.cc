@@ -194,6 +194,7 @@ uniform vec3 skyTop;      // zenith colour (also drives reflections)
 uniform vec3 skyBot;      // horizon colour
 // Per-material (see Material): coverage, and what a surface opts out of.
 uniform float cutoff;     // > 0: discard where coverage is below it (leaf cards)
+uniform vec2 fade;        // (gone, whole) distances; equal: no distance fade
 uniform vec3 emissive;    // added after lighting, before fog
 uniform float unlit;      // 1: the base colour as is, no light or reflection
 out vec4 finalColor;
@@ -251,7 +252,21 @@ vec4 baseColor(vec2 uv) {
   float t = lod - l0;
   return t > 0.0 ? mix(c, coverLevel(uv, l0 + 1.0, span), t) : c;
 }
+// The 4x4 ordered-dither thresholds (Bayer): each 2x2 block holds an even
+// spread too, so a 2x resolve averages four levels and a 4x one all sixteen.
+const float kBayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
+                                   3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 void main() {
+  // Distance fade: the share of the pixels kept goes from none at `gone` to
+  // all at `whole`. A fading-out surface (gone > whole) reads each threshold
+  // as its complement, so the pair with the two distances swapped keeps
+  // every pixel exactly once.
+  if (fade.x != fade.y) {
+    float kept = clamp((length(fragWorld - viewPos) - fade.x) / (fade.y - fade.x), 0.0, 1.0);
+    ivec2 cell = ivec2(gl_FragCoord.xy) & 3;
+    float t = (kBayer[cell.y * 4 + cell.x] + 0.5) / 16.0;
+    if (kept < (fade.x > fade.y ? 1.0 - t : t)) discard;
+  }
   // texture0 defaults to a 1x1 white texture, so untextured shapes are
   // unaffected (white * colour). A material can swap in a real texture.
   vec4 tex = baseColor(fragUV);
@@ -800,6 +815,7 @@ class Material : public std::enable_shared_from_this<Material> {
   float roughness = 0.85f;
   int64_t opacity_ = 255;
   float cutoff = 0.0f;
+  Vector2 fade_{0, 0};   // (gone, whole) distances; equal: none
   Vector3 emissive_{0, 0, 0};
   bool unlit_ = false, double_sided_ = false, depth_write_ = true, depth_test_ = true;
   bool casts_shadow_ = true, fog_ = true;
@@ -833,6 +849,11 @@ class Material : public std::enable_shared_from_this<Material> {
   Material& texture(const Texture* t) { tex = t ? t->shared_from_this() : nullptr; return *this; }
   Material& opacity(int64_t a) { opacity_ = chan(a); return *this; }
   Material& cutout(double t) { cutoff = (float)t; return *this; }
+  // Dither the surface away with the distance from the eye: none of it at
+  // `gone`, all of it at `whole`.
+  Material& distance_fade(double gone, double whole) {
+    fade_ = Vector2{(float)gone, (float)whole}; return *this;
+  }
   Material& emissive(int64_t r, int64_t g, int64_t b, double k) { emissive_ = rgb01(r, g, b, k); return *this; }
   Material& unlit(bool on) { unlit_ = on; return *this; }
   Material& double_sided(bool on) { double_sided_ = on; return *this; }
@@ -1770,6 +1791,7 @@ class View {
     loc_skytop_ = GetShaderLocation(lit_, "skyTop");
     loc_skybot_ = GetShaderLocation(lit_, "skyBot");
     loc_cutoff_ = GetShaderLocation(lit_, "cutoff");
+    loc_fade_ = GetShaderLocation(lit_, "fade");
     loc_emissive_ = GetShaderLocation(lit_, "emissive");
     loc_unlit_ = GetShaderLocation(lit_, "unlit");
     loc_texcover_ = GetShaderLocation(lit_, "texelCover");
@@ -2440,6 +2462,7 @@ class View {
     Texture2D tex = t ? t->tex : white_;
     float metallic = m ? m->metallic : 0.0f, roughness = m ? m->roughness : 0.85f;
     float cutoff = m ? m->cutoff : 0.0f;
+    Vector2 fade = m ? m->fade_ : Vector2{0, 0};
     float unlit = m && m->unlit_ ? 1.0f : 0.0f;
     float texcover = t && t->coverage ? 1.0f : 0.0f;
     Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
@@ -2467,6 +2490,7 @@ class View {
     SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_rough_, &roughness, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_cutoff_, &cutoff, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_fade_, &fade, SHADER_UNIFORM_VEC2);
     SetShaderValue(lit_, loc_emissive_, &emissive, SHADER_UNIFORM_VEC3);
     SetShaderValue(lit_, loc_unlit_, &unlit, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_texcover_, &texcover, SHADER_UNIFORM_FLOAT);
@@ -2988,7 +3012,7 @@ class View {
   int loc_lvp0_ = 0, loc_lvp1_ = 0;
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
-  int loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_texcover_ = 0;
+  int loc_cutoff_ = 0, loc_fade_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_texcover_ = 0;
   int loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
   int loc_detail_uv_ = 0, loc_detail_k_ = 0, loc_detail_masked_ = 0;
   bool culling_ = true;
@@ -3067,6 +3091,7 @@ const bool registered = [] {
       .borrowed_method<&gfx::Material::texture>("texture", {"tex"})
       .borrowed_method<&gfx::Material::opacity>("opacity", {"a"})
       .borrowed_method<&gfx::Material::cutout>("cutout", {"threshold"})
+      .borrowed_method<&gfx::Material::distance_fade>("distance_fade", {"gone", "whole"})
       .borrowed_method<&gfx::Material::emissive>("emissive", {"r", "g", "b", {"k", 1.0}})
       .borrowed_method<&gfx::Material::unlit>("unlit", {{"on", true}})
       .borrowed_method<&gfx::Material::double_sided>("double_sided", {{"on", true}})

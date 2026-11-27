@@ -1232,6 +1232,62 @@ println("unbiased: the ground shows through: {plain[0] > 0}")
 view.drop()
 EOS
 
+# distance_fade: two coplanar squares seen from 100 above, the near level
+# fading out from 115 to 135 and the far one in, a pair with the distances
+# swapped. At 1x every pixel is wholly one or the other (none empty, so the
+# pair keeps each pixel once); at 4x the far one's share is the distance's
+# place in the band, an output pixel averaging all sixteen thresholds.
+cat > scene_fade.cul <<'EOS'
+let view = Scene.View.new(80, 40, "scene fade")
+view.background(0, 0, 0)
+view.post_process(false)
+view.supersample(1)
+let near = view.add_material().rgb(255, 0, 0).unlit().distance_fade(135.0, 115.0)
+let far = view.add_material().rgb(0, 255, 0).unlit().distance_fade(115.0, 135.0)
+view.add_plane(1000.0, 1000.0).material(near)
+let far_node = view.add_plane(1000.0, 1000.0).material(far)
+let plain = view.render_target(32, 32)
+let fine = view.render_target(32, 32, supersample: 4)
+Canvas.init(80, 40)
+fn shoot() {
+  for t in [plain, fine] { view.render_to(t, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 90.0) }
+  view.begin_2d()
+  view.sprite(plain, 0.0, 0.0, 32.0, 32.0)
+  view.sprite(fine, 40.0, 0.0, 32.0, 32.0)
+  view.screenshot("fade.png")
+  view.present()
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read("fade.png")).draw(0, 0)
+}
+fn rgb(x, y) {
+  let v = Canvas.get_pixel(x, y)
+  [v & 255, (v >> 8) & 255, (v >> 16) & 255]
+}
+# the distance from the eye to the middle of pixel (x, y) of a target
+fn dist(x, y) {
+  let (u, v) = ((x + 0.5) / 16.0 - 1.0, (y + 0.5) / 16.0 - 1.0)
+  100.0 * Math.sqrt(1.0 + u * u + v * v)
+}
+let px = iota(32).flat_map(|y| iota(32).map(|x| (x, y)))
+shoot()
+let whole = px.all(|(x, y)| [[255, 0, 0], [0, 255, 0]].contains(rgb(x, y)))
+let banded = px.filter(|(x, y)| dist(x, y) > 115.0 && dist(x, y) < 135.0)
+let both = banded.any(|(x, y)| rgb(x, y)[0] == 255) && banded.any(|(x, y)| rgb(x, y)[1] == 255)
+println("1x: each pixel wholly one of the pair, both in the band: {whole && both}")
+println("near, the first; far, the second: {rgb(56, 16) == [255, 0, 0] && rgb(40, 0) == [0, 255, 0]}")
+let share = px.all(|(x, y)| {
+  let c = rgb(40 + x, y)
+  let want = 255.0 * Math.clamp((dist(x, y) - 115.0) / 20.0, 0.0, 1.0)
+  c[0] + c[1] >= 253 && c[0] + c[1] <= 257 && Math.abs(c[1] - want) <= 40.0
+})
+println("4x: the far one's share is the distance's place in the band: {share}")
+far_node.hide()
+near.distance_fade(500.0, 500.0)
+shoot()
+println("equal distances turn it off: {px.all(|(x, y)| rgb(x, y) == [255, 0, 0] && rgb(40 + x, y) == [255, 0, 0])}")
+view.drop()
+EOS
+
 # 3D lines: a width in the output's pixels, so a 1-pixel line in a 4x target is
 # one pixel's worth of colour in every column wherever it falls between pixels,
 # and a diagonal's columns hold steady as it moves (whole-sample coverage made
@@ -1662,6 +1718,11 @@ run_pair tss "a 4x target is 16.0x16.0 to its readers: true" "1x is the default:
 echo "OK: a supersampled render target averages its edges and keeps the output's mip levels"
 run_pair bias "biased: the marking only: true" "unbiased: the ground shows through: true"
 echo "OK: depth_bias keeps a coplanar marking in front, near, far and grazing"
+run_pair fade "1x: each pixel wholly one of the pair, both in the band: true" \
+  "near, the first; far, the second: true" \
+  "4x: the far one's share is the distance's place in the band: true" \
+  "equal distances turn it off: true"
+echo "OK: distance_fade dithers a pair of coplanar levels across a band, each pixel once"
 run_pair lines "4x: one pixel's worth a column, at every offset: true" \
   "1x: no column is empty: true" "diagonal unbroken: true steady: true" "width 3: true" \
   "half a pixel is half as bright: true" \
