@@ -9365,6 +9365,10 @@ it or to any of its parts and values.
 | `g.abs(input)` | the size of `input` |
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `input` held within `lo`..`hi` |
 | `g.exp(input)` | e to the power of `input` |
+| `g.log(input)` | the natural log of `input`, taken as 1e-12 where it is less (0 and below among it), so no infinity or NaN comes out |
+| `g.divide(input, by = 1.0)` | `input` divided by `by`, and 0 where `by` is 0 |
+| `g.above(input, than = 0.0)` / `g.below(input, than = 0.0)` | 1 where `input` is above (below) `than`, 0 where it is not |
+| `g.select(input, a = 1.0, b = 0.0)` | `a` where `input` is above 0, `b` where it is not |
 | `g.round(input, step)` | `input` rounded to the nearest multiple of `step`, a number above 0 (a half goes up: `floor(x / step + 0.5) * step`) |
 | `g.latch(input, trigger = 0.0)` | what `input` was at the last sample its `trigger` went from 0 or below to above 0, held until it next does: a sample and hold. 0 until the first rise; a trigger above 0 at the first sample takes that sample in. It answers at once, so a loop through it still needs a delay. `trigger` is a value (below), so a part connected to it triggers it: `g.impulse(4000.0).connect(l.trigger)` |
 | `g.room(input, size = 0.5, damp = 0.5, side = 0)` | one side of a room (Freeverb: eight damped combs, then four allpasses), answering only the echoes of `input`. `side` 0 is the left and 1 the right, whose delays are 23 samples longer, so two sides of one input ring apart; the delays follow the graph's rate. `size` (0 to 1) sets how long it rings (60 dB in about 0.7 s at 0, 1.5 s at 0.5 and 12 s at 1) and `damp` (0 to 1) how soon its highs go. A room is worked out as long as it plays |
@@ -9379,7 +9383,8 @@ it or to any of its parts and values.
 What moves in a part is a value: a wave's `freq`, `feedback` and `phase`, a
 filter's `cutoff`, a gain's `gain`, a string's `freq` and `ring`, a delay's
 `time`, a drive's `gain`, an impulse's and an lfnoise's `freq`, a dust's
-`density`, a room's `size` and `damp`, and a latch's `trigger`, each a field of the part. A value is its
+`density`, a room's `size` and `damp`, a latch's `trigger`, a divide's `by`,
+an above's and a below's `than`, and a select's `a` and `b`, each a field of the part. A value is its
 schedule plus what the parts connected to it answer, sample by sample, as
 Web Audio's `AudioParam` is: `lfo.connect(w.freq)` adds the lfo to the
 wave's freq, in Hz, as `lfo.connect(d.time)` adds it to a delay's time, in
@@ -10621,6 +10626,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.envelope(x, gain, rate = nil)` | `x * gain` for a part; `Audio.envelope(x, gain, rate)` for samples, `gain` an envelope of `(at, value)` |
 | `Synth.hz(note) -> Float \| SynthPart` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave. A part or an envelope gives the signal in Hz, so `sine(hz(60.0 + sine(5.0) * 0.3))` is a vibrato of 0.3 semitones |
 | `Synth.db(x) -> Float \| SynthPart` | decibels as a gain: 0 is 1.0, -6 about 0.5; a part or an envelope gives the signal |
+| `Synth.select(cond, a, b)` | `a` where `cond` is above 0, `b` where it is not, as `Audio.Graph`'s `select`; each a number, a part, an envelope or an Array |
 | `Synth.render(expr, seconds = nil, rate = 44100, channels = 1) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out; without `seconds`, until it ends on its own (below), and a `ValueError` for one that does not. With `channels: 2`, `[left, right]` (below) |
 
 | Method of a part | Effect |
@@ -10638,12 +10644,16 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.decay2(attack, decay)` | impulses in `p` made an envelope that rises in about `attack` seconds and falls 60 dB in `decay` (0 < `attack` < `decay`): `Audio.Graph`'s `decay` over `decay`, less the one over `attack`. Its peak is below 1, and nearer 1 the further apart the two are |
 | `p.clip(lo, hi)` | `p` held within `lo`..`hi` |
 | `p.abs()` | the size of `p` |
+| `p.exp()` | e to the power of `p` |
+| `p.log()` | the natural log of `p`, taken as 1e-12 where `p` is less (0 and below among it), as `Audio.Graph`'s `log`: `p.abs().log() * (20.0 / Math.log(10.0))` is its level in decibels |
+| `p.gt(x)` / `p.lt(x)` | 1 where `p` is above (below) `x`, a number, a part, an envelope or an Array, and 0 where it is not, as `Audio.Graph`'s `above` and `below`; with `select`, `latch` (which a rise above 0 triggers) or `*`, it switches a sound |
 | `p.round(step)` | `p` rounded to the nearest multiple of `step`, a number above 0, as `Audio.Graph`'s `round`: `p.round(0.25)` keeps 9 levels of -1..1 |
 | `p.latch(trigger)` | what `p` was when `trigger` last went from 0 or below to above 0, held until it next does, as `Audio.Graph`'s `latch`; 0 until the first rise. `p.latch(impulse(4000.0))` holds each sample a quarter of a millisecond |
 | `p.mix()` | a bundle's channels added to one part; a part as it is |
 | `p.pan(pos)` | stereo, `p` placed at `pos` from -1 (left) to 1 (right) at equal power: the left times sin((1 - pos)π/4), the right times sin((1 + pos)π/4), so 0 is about 0.707 on each side. A bundle of two is turned down side by side, each channel on its own side. `pos` is a number from -1 to 1 (`ValueError` past it), or a part or an envelope, held within -1..1 |
 | `p.reverb(mix = 0.33, room = 0.5, damp = 0.5)` | stereo, `p` in a room: its channels' sum goes into a room of each side (`Audio.Graph`'s `room`), and each side is `1 - mix` of its dry sound (one channel on both sides) and `mix` of its room. `room` (0 to 1) sets how long the room rings and `damp` (0 to 1) how soon its highs go; a part or an envelope moves them, held within 0..1. `mix` is a number from 0 to 1, and 0 makes no room. A bundle of more than two is a `ValueError` |
-| `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part, an envelope or an Array on the right; a number, an envelope or an Array on the left of `+`, `-` and `*` too (`2.0 - p`); `/` by a number only, `ValueError` for 0 |
+| `p + x`, `p - x`, `p * x`, `p / x`, `-p` | parts added, subtracted, multiplied (a gain) and divided, with a number, a part, an envelope or an Array on the right; a number, an envelope or an Array on the left of `+`, `-`, `*` and `/` too (`2.0 - p`). Divided by a part or an envelope, it is 0 where that is 0, as `Audio.Graph`'s `divide`; divided by a number, it is a gain of its inverse, and a `ValueError` for 0 |
+| `n ** p` | a number `n` (finite and above 0, else `ValueError`) to the power of `p`: `2.0 ** (p / 12.0)` is the ratio of `p` semitones |
 
 An Array where a value or a part goes is a channel per item, and what is
 made of it is a bundle: a part per channel, what is one channel going to
@@ -10700,7 +10710,9 @@ filter's is `cutoff / q` wide at its lowest cutoff, and never ends once
 that is 0, where it holds what it has; one a signal moves adds none), a lag and a decay for their time, and a room for 60 dB of its
 ring at its largest size (its longest comb losing what it feeds back each
 time round, then its longest allpass; 1.6 s at 0.5); a size, a rounding,
-and a clip that holds 0, end with their input. A latch holds what it took
+a quotient, and a clip that holds 0, end with their input (0 divided by
+anything is 0), a comparison and a `select` with the later of their two,
+and an `exp`, a `log` and a number to a part's power never. A latch holds what it took
 last, so it ends two periods after its input when its trigger is an
 `impulse` at a fixed `freq`, which by then has taken in a 0, and never with
 another trigger (a `* perc(...)` after it ends it). An impulse or a dust ends when its `freq` or
@@ -10905,6 +10917,22 @@ let slewed = feedback(|y| y.delay(0.0) + (x - y.delay(0.0)).clip(-0.01, 0.01))
 let shaped = x - x * x * x / 3.0
 let coarse = x.round(0.25).latch(impulse(4000.0))  # 9 levels, 4000 samples a second
 println(render(coarse, 0.01).size())  # => 441
+```
+
+Dynamics are a level in decibels and a gain made of it. A compressor
+follows the level, takes what is over its threshold and brings it down by
+its ratio; a gate shuts the sound while its level is under a threshold,
+the switch glided so it does not click.
+
+```culebra
+let {saw, sine, db, render} = Synth
+let x = saw(110.0) * sine(0.5).abs()
+let level = x.abs().lag(0.01).log() * (20.0 / Math.log(10.0))  # in dB
+let over = (level + 18.0).clip(0.0, 120.0)  # above -18 dB
+let compressed = x * db(over * -0.75)  # 4:1
+let gated = x * x.abs().lag(0.01).gt(0.1).lag(0.005)
+println(render(compressed, 1.0).map(|v| Math.abs(v)).max() < render(x, 1.0).map(|v| Math.abs(v)).max())  # => true
+println(render(gated, 0.01).all(|v| v == 0.0))  # => true
 ```
 
 The five functions that take a part or samples let samples chain as a

@@ -6450,6 +6450,11 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
       return value == 0 ? "Audio.Graph: a room's size is from 0 to 1" : "Audio.Graph: a room's damp is from 0 to 1";
     case ad::PartKind::Latch:
       return value == 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a latch's trigger is a finite number";
+    case ad::PartKind::Pair:
+      return value == 0 && std::isfinite(v) ? nullptr
+                                            : "Audio.Graph: what a part divides by or compares with is a finite number";
+    case ad::PartKind::Select:
+      return std::isfinite(v) ? nullptr : "Audio.Graph: a select's a and b are finite numbers";
     case ad::PartKind::Input: break;
     case ad::PartKind::Noise:
     case ad::PartKind::Resonate:
@@ -6482,14 +6487,16 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
 // "delay", "limit", "drive", "impulse", "dust", "lfnoise", "lag", "decay",
-// "math", "round", "latch", "room" or "input"), `kind` naming the wave, the filter, the lfnoise or the math,
+// "math", "round", "latch", "pair", "select", "room" or "input"), `kind` naming the wave, the filter, the
+// lfnoise, the math or the pair,
 // taking in `inputs`, parts made before it. It is set up by the numbers
 // `options`: a wave's freq, feedback and phase, a noise's seed, a filter's
 // cutoff and q, a gain's gain, a resonance's dry and modes, a string's freq
 // and ring, a delay's time, a limit's ceiling and release, a drive's gain, an
 // impulse's freq and phase, a dust's density and seed, an lfnoise's freq and
 // seed, a lag's and a decay's time, a math's lo and hi, a round's step, a
-// latch's trigger, a room's size, damp and side, an input's bus and channel.
+// latch's trigger, a pair's value, a select's a and b, a room's size, damp
+// and side, an input's bus and channel.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6564,17 +6571,25 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
       break;
     case ad::PartFamily::Math: {
       static constexpr std::pair<std::string_view, ad::MathKind> kMaths[] = {
-          {"abs", ad::MathKind::Abs}, {"clip", ad::MathKind::Clip}, {"exp", ad::MathKind::Exp}};
+          {"abs", ad::MathKind::Abs}, {"clip", ad::MathKind::Clip}, {"exp", ad::MathKind::Exp},
+          {"log", ad::MathKind::Log}};
       spec.kind = static_cast<int>(_ns_audio_named(kind, kMaths, "Audio.Graph", "a math"));
       if (!(std::isfinite(opt[0]) && std::isfinite(opt[1]) && opt[0] <= opt[1]))
         _ns_audio_fail("Audio.Graph: a clip's lo and hi are finite, lo at most hi");
+      break;
+    }
+    case ad::PartFamily::Pair: {
+      static constexpr std::pair<std::string_view, ad::PairKind> kPairs[] = {
+          {"divide", ad::PairKind::Divide}, {"above", ad::PairKind::Above}, {"below", ad::PairKind::Below}};
+      spec.kind = static_cast<int>(_ns_audio_named(kind, kPairs, "Audio.Graph", "a pair"));
       break;
     }
     case ad::PartFamily::Gain:
     case ad::PartFamily::Pluck:
     case ad::PartFamily::Delay:
     case ad::PartFamily::Drive:
-    case ad::PartFamily::Latch: break;
+    case ad::PartFamily::Latch:
+    case ad::PartFamily::Select: break;
   }
   const ad::PartKind k = ad::part_kind(spec.family);
   const ad::PartRests rests = ad::part_rests(spec);

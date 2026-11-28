@@ -1,6 +1,8 @@
 # Synth's impulse, dust, lfnoise and pulse, .lag, .decay2, .clip, .abs,
-# .exprange, .round and .latch, and hz and db of a signal, each against the
-# Audio.Graph written out by hand or the formula it follows.
+# .exprange, .round, .latch, .exp, .log, .gt and .lt, a signal divided by
+# another, select, a number to a signal's power, and hz and db of a signal,
+# each against the Audio.Graph written out by hand or the formula it
+# follows.
 
 let {*} = Synth
 
@@ -177,6 +179,38 @@ fn sample_and_hold(xs, trigger) {
   assert_samples(at_rate(x.round(0.25).latch(impulse(2000.0)), 0.1), sample_and_hold(coarse, at_rate(impulse(2000.0), 0.1)))
 }
 
+# ---- a signal divided by, compared with and chosen by another (a second
+# sine, 0 at its first sample), exp, log, and a number to a signal's power
+{
+  let other = sine(30.0)
+  let o = at_rate(other, 0.1)
+  let each = |f| iota(raw.size()).map(|i| f(raw[i], o[i]))
+  assert_eq(o[0], 0.0)
+  assert_samples(at_rate(s / other, 0.1), each(|a, b| b == 0.0 ? 0.0 : a / b))
+  assert_samples(at_rate(2.0 / other, 0.1), each(|_, b| b == 0.0 ? 0.0 : 2.0 / b))
+  assert_samples(at_rate(s.gt(other), 0.1), each(|a, b| a > b ? 1.0 : 0.0))
+  assert_samples(at_rate(s.lt(0.25), 0.1), each(|a, _| a < 0.25 ? 1.0 : 0.0))
+  assert_samples(at_rate(select(other, s, 0.25), 0.1), each(|a, b| b > 0 ? a : 0.25))
+  assert_samples(at_rate(s.exp(), 0.1), raw.map(|x| Math.exp(x)))
+  assert_samples(at_rate(s.log(), 0.1), raw.map(|x| Math.log(Math.max(x, 1e-12))))
+  assert_samples(at_rate(2.0 ** s, 0.1), raw.map(|x| Math.exp(x * Math.log(2.0))))
+  # A part divided by a number is still a gain of its inverse.
+  assert_eq((s / 4.0).kind, "gain")
+}
+
+# A compressor and a gate written of them, each against its definition
+# worked out a sample at a time: above -12 dB, the level is brought down
+# to a quarter of what it is over; below 0.3, the sound is shut.
+{
+  let x = saw(110.0) * sine(3.0)
+  let xs = at_rate(x, 0.05)
+  let over = (x.abs().log() * (20.0 / Math.log(10.0)) + 12.0).clip(0.0, 200.0)
+  let compressed = x * db(over * -0.75)
+  let gain_of = |v| Math.exp(Math.log(10.0) * Math.clamp(Math.log(Math.max(Math.abs(v), 1e-12)) * (20.0 / Math.log(10.0)) + 12.0, 0.0, 200.0) * -0.75 / 20.0)
+  assert_samples(at_rate(compressed, 0.05), xs.map(|v| v * gain_of(v)))
+  assert_samples(at_rate(x * x.abs().gt(0.3), 0.05), xs.map(|v| Math.abs(v) > 0.3 ? v : 0.0))
+}
+
 # ---- when they end: play needs no secs for one that ends on its own.
 
 fn ends(expr) {
@@ -195,7 +229,15 @@ let stepped = struck.latch(impulse(100.0))
 assert_close(ends(stepped), 0.13, 1e-12)
 let tail_end = render(stepped)
 assert_eq(tail_end[tail_end.size() - 1], 0.0)
-for expr in [dust(10.0), lfnoise(4.0), impulse(4.0), struck.clip(0.1, 0.5), struck.exprange(1.0, 2.0), struck.latch(dust(100.0)), hz(sine(5.0))] {
+# A quotient ends with what is divided; a comparison and a select with the
+# later of their two.
+let longer = sine(440.0) * perc(0.01, 0.2)
+assert_close(ends(struck / sine(3.0)), 0.11, 1e-12)
+assert_close(ends(struck.gt(longer)), 0.21, 1e-12)
+assert_close(ends(longer.lt(struck)), 0.21, 1e-12)
+assert_close(ends(select(sine(2.0), struck, longer)), 0.21, 1e-12)
+for expr in [dust(10.0), lfnoise(4.0), impulse(4.0), struck.clip(0.1, 0.5), struck.exprange(1.0, 2.0), struck.latch(dust(100.0)), hz(sine(5.0)),
+             struck.exp(), 1.0 / struck, select(struck, 1.0, 0.0)] {
   assert_eq(caught(|| play(expr))[0], "ValueError")
 }
 
@@ -214,6 +256,10 @@ for (call, message) in [
   (|| at_rate(s.clip(1.0, 0.0), 0.1), "Audio.Graph: a clip's lo and hi are finite, lo at most hi"),
   (|| at_rate(s.round(0.0), 0.1), "Audio.Graph: a round's step is a finite number above 0"),
   (|| hz(Math.inf), "Synth.hz: note is a finite number"),
+  (|| s / 0, "Synth: a part divided by 0"),
+  (|| s / [1.0, 0.0], "Synth: a part divided by 0"),
+  (|| 0.0 ** s, "Synth: a number to the power of a part is finite and above 0"),
+  (|| Math.inf ** s, "Synth: a number to the power of a part is finite and above 0"),
 ] {
   assert_eq(caught(call), ("ValueError", message))
 }

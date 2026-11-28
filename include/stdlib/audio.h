@@ -1744,10 +1744,14 @@ class ReverbTank {
   std::vector<uint32_t> line_;
 };
 
+// The least a log part takes the log of: what comes in at 0 or below, or
+// nearer 0 than this, is taken as this, so no infinity or NaN enters a graph.
+inline constexpr double kGraphLogFloor = 1e-12;
+
 // What a Math part answers for what comes in: its size, it held within lo..hi,
-// e to its power, or it rounded to the nearest multiple of `unit` (a half
-// going up).
-enum class MathKind { Abs, Clip, Exp, Round };
+// e to its power, it rounded to the nearest multiple of `unit` (a half going
+// up), or its natural log (of kGraphLogFloor at the least).
+enum class MathKind { Abs, Clip, Exp, Log, Round };
 
 struct MathOp {
   MathKind kind;
@@ -1758,6 +1762,7 @@ struct MathOp {
       case MathKind::Abs: return std::abs(x);
       case MathKind::Clip: return std::clamp(x, lo, hi);
       case MathKind::Exp: return std::exp(x);
+      case MathKind::Log: return std::log(std::max(x, kGraphLogFloor));
       case MathKind::Round: return std::floor(x / unit + 0.5) * unit;
     }
     return 0.0;
@@ -1781,13 +1786,31 @@ class Latch {
   bool was_up_ = false;
 };
 
+// What a Pair part answers for what comes in and its value: the one divided
+// by the other (0 where the value is 0), or 1 where what comes in is above
+// (below) the value and 0 where it is not.
+enum class PairKind { Divide, Above, Below };
+
+struct PairOp {
+  PairKind kind;
+  double step(double x, double v) const {
+    switch (kind) {
+      case PairKind::Divide: return v == 0 ? 0.0 : x / v;
+      case PairKind::Above: return x > v ? 1.0 : 0.0;
+      case PairKind::Below: return x < v ? 1.0 : 0.0;
+    }
+    return 0.0;
+  }
+};
+
 enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math, Room,
-                      Input, Latch };
+                      Input, Latch, Pair, Select };
 
 // How many values a part of `kind` reads: a wave's freq, feedback and phase,
 // a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
 // a drive's gain, an impulse's and an lfnoise's freq, a dust's density, a
-// room's size and damp, a latch's trigger.
+// room's size and damp, a latch's trigger, a pair's value, a select's a and
+// b.
 // (Every kind is named here and below, so a kind added is a -Wswitch error in
 // check-bench-audio-graph, which builds this header with -Werror, until each
 // says what it is.)
@@ -1807,9 +1830,11 @@ inline int value_count(PartKind kind) {
     case PartKind::Impulse:
     case PartKind::Dust:
     case PartKind::LfNoise:
-    case PartKind::Latch: return 1;
+    case PartKind::Latch:
+    case PartKind::Pair: return 1;
     case PartKind::Pluck:
-    case PartKind::Room: return 2;
+    case PartKind::Room:
+    case PartKind::Select: return 2;
     case PartKind::Wave: return 3;
   }
   return 0;
@@ -1837,7 +1862,9 @@ inline bool takes_in(PartKind kind) {
     case PartKind::Decay:
     case PartKind::Math:
     case PartKind::Room:
-    case PartKind::Latch: return true;
+    case PartKind::Latch:
+    case PartKind::Pair:
+    case PartKind::Select: return true;
   }
   return false;
 }
@@ -1888,7 +1915,9 @@ inline ValueRange held_range(PartKind kind, int value, double rate) {
     case PartKind::Decay:
     case PartKind::Math:
     case PartKind::Input:
-    case PartKind::Latch: break;  // a gain's and a latch's trigger are any number; the rest have no values
+    case PartKind::Latch:
+    case PartKind::Pair:
+    case PartKind::Select: break;  // a gain's, a latch's, a pair's and a select's are any number; the rest have no values
   }
   return {};
 }
@@ -1943,7 +1972,7 @@ struct BusRead {
 // (Graph::encode, for an engine on another thread of a browser).
 enum class PartFamily : uint8_t {
   Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math, Round,
-  Latch, Room, Input
+  Latch, Pair, Select, Room, Input
 };
 inline constexpr int kPartFamilies = static_cast<int>(PartFamily::Input) + 1;
 struct PartSpec {
@@ -1968,8 +1997,9 @@ inline constexpr PartFamilyInfo kPartFamilyInfo[] = {
     {"drive", PartKind::Drive, 1, 1},        {"impulse", PartKind::Impulse, 1, 2},
     {"dust", PartKind::Dust, 1, 2},          {"lfnoise", PartKind::LfNoise, 3, 2},
     {"lag", PartKind::Lag, 1, 1},            {"decay", PartKind::Decay, 1, 1},
-    {"math", PartKind::Math, 3, 2},          {"round", PartKind::Math, 1, 1},
-    {"latch", PartKind::Latch, 1, 1},        {"room", PartKind::Room, 1, 3},
+    {"math", PartKind::Math, 4, 2},          {"round", PartKind::Math, 1, 1},
+    {"latch", PartKind::Latch, 1, 1},        {"pair", PartKind::Pair, 3, 1},
+    {"select", PartKind::Select, 1, 2},      {"room", PartKind::Room, 1, 3},
     {"input", PartKind::Input, 1, 2}};
 static_assert(std::size(kPartFamilyInfo) == kPartFamilies);
 inline const PartFamilyInfo& family_info(PartFamily f) { return kPartFamilyInfo[static_cast<int>(f)]; }
@@ -2022,7 +2052,8 @@ inline PartRests part_rests(const PartSpec& s) {
   switch (s.family) {
     case PartFamily::Wave: return {{o[0], o[1], o[2]}};
     case PartFamily::Pluck:
-    case PartFamily::Room: return {{o[0], o[1], 0}};
+    case PartFamily::Room:
+    case PartFamily::Select: return {{o[0], o[1], 0}};
     case PartFamily::Filter:
     case PartFamily::Gain:
     case PartFamily::Delay:
@@ -2030,7 +2061,8 @@ inline PartRests part_rests(const PartSpec& s) {
     case PartFamily::Impulse:
     case PartFamily::Dust:
     case PartFamily::LfNoise:
-    case PartFamily::Latch: return {{o[0], 0, 0}};
+    case PartFamily::Latch:
+    case PartFamily::Pair: return {{o[0], 0, 0}};
     case PartFamily::Noise:
     case PartFamily::Resonate:
     case PartFamily::Limit:
@@ -2050,12 +2082,13 @@ struct GraphPart {
   // A wave's freq, feedback and phase, a filter's cutoff, a gain's gain, a
   // string's freq and ring, a delay's time, a drive's gain, an impulse's and
   // an lfnoise's freq, a dust's density, a room's size and damp, a latch's
-  // trigger; each is its schedule plus the sum of the parts connected to it.
+  // trigger, a pair's value, a select's a and b; each is its schedule plus
+  // the sum of the parts connected to it.
   Param values[kGraphValues];
   std::vector<int> connected[kGraphValues];
   ValueRange held[kGraphValues];  // where each value is held (held_range's)
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive, Impulse, Dust,
-               LfNoise, Lag, Decay, MathOp, ReverbTank, BusRead, Latch>
+               LfNoise, Lag, Decay, MathOp, ReverbTank, BusRead, Latch, PairOp>
       processor;
   double out[kGraphBlock] = {};
 };
@@ -2085,6 +2118,8 @@ inline decltype(GraphPart::processor) make_processor(const PartSpec& s, double r
     case PartFamily::Math: return MathOp{static_cast<MathKind>(s.kind), o[0], o[1]};
     case PartFamily::Round: return MathOp{.kind = MathKind::Round, .unit = o[0]};
     case PartFamily::Latch: return Latch{};
+    case PartFamily::Pair: return PairOp{static_cast<PairKind>(s.kind)};
+    case PartFamily::Select: return std::monostate{};
     case PartFamily::Room: return ReverbTank(rate, static_cast<int>(o[2]));
     case PartFamily::Input: {
       auto id = static_cast<int64_t>(o[0]);
@@ -2534,6 +2569,14 @@ class Graph {
         for (int i = 0; i < n; i++) out[i] = l.step(in[i], v0[i]);
         break;
       }
+      case PartKind::Pair: {
+        const auto& q = std::get<PairOp>(p.processor);
+        for (int i = 0; i < n; i++) out[i] = q.step(in[i], v0[i]);
+        break;
+      }
+      case PartKind::Select:
+        for (int i = 0; i < n; i++) out[i] = in[i] > 0 ? v0[i] : v1[i];
+        break;
       case PartKind::Room: {
         auto& t = std::get<ReverbTank>(p.processor);
         for (int i = 0; i < n; i++) out[i] = t.step(in[i], reverb_feedback(v0[i]), reverb_damp(v1[i]));

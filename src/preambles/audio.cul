@@ -218,7 +218,8 @@ let _audio_module = fn () {
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
   # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
-  # dust's density, a room's size and damp, a latch's trigger.
+  # dust's density, a room's size and damp, a latch's trigger, a divide's
+  # by, an above's and a below's than, a select's a and b.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -231,6 +232,10 @@ let _audio_module = fn () {
     size = nil
     damp = nil
     trigger = nil
+    by = nil
+    than = nil
+    a = nil
+    b = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -407,6 +412,36 @@ let _audio_module = fn () {
     }
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
+    }
+    # The natural log of what comes in, which is taken as 1e-12 where it is
+    # less (0 and below among it).
+    log(input: AudioGraphPart) {
+      @_part("math", "log", [input], [-1.0, 1.0])
+    }
+    # What comes in divided by `by`; 0 where `by` is 0.
+    divide(input: AudioGraphPart, by: Long | Float = 1.0) {
+      let p = @_part("pair", "divide", [input], [by])
+      p.by = @_value(p, 0)
+      p
+    }
+    # 1 where what comes in is above `than`, 0 where it is not.
+    above(input: AudioGraphPart, than: Long | Float = 0.0) {
+      let p = @_part("pair", "above", [input], [than])
+      p.than = @_value(p, 0)
+      p
+    }
+    # 1 where what comes in is below `than`, 0 where it is not.
+    below(input: AudioGraphPart, than: Long | Float = 0.0) {
+      let p = @_part("pair", "below", [input], [than])
+      p.than = @_value(p, 0)
+      p
+    }
+    # `a` where what comes in is above 0, `b` where it is not.
+    select(input: AudioGraphPart, a: Long | Float = 1.0, b: Long | Float = 0.0) {
+      let p = @_part("select", "", [input], [a, b])
+      p.a = @_value(p, 0)
+      p.b = @_value(p, 1)
+      p
     }
     # What comes in rounded to the nearest multiple of `step` (a half going
     # up): `step` is a number above 0.

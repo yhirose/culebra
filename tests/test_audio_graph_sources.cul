@@ -1,7 +1,8 @@
 // Audio.Graph: the sources that are not waves (impulse, dust, lfnoise) and
 // the parts that shape what comes in (lag, decay, abs, clip, exp, round,
-// latch), each against the computation it stands for written out. The
-// harness keeps the device closed (CULEBRA_AUDIO=off).
+// latch, log, divide, above, below, select), each against the computation
+// it stands for written out. The harness keeps the device closed
+// (CULEBRA_AUDIO=off).
 
 let RATE = 8000
 
@@ -236,6 +237,25 @@ fn sample_and_hold(xs, trigger) {
   gl.delay(through, 0.0).connect(fed)
 }
 
+// ---- log, divide, above, below, select: what comes in against a second
+// sine (0 at its first sample), sample by sample (in a block, as above)
+
+{
+  let other = |g| g.wave("sine", freq: 30.0)
+  let o = render(other, 0.1)
+  let against = |make| render(fn (g) {
+    let p = make(g)
+    other(g).connect(p.by ?? p.than ?? p.a)
+    p
+  }, 0.1)
+  assert_samples(render(|g| g.log(sine(g)), 0.1), s.map(|x| Math.log(Math.max(x, 1e-12))))
+  assert_samples(against(|g| g.divide(sine(g), 0.0)), iota(s.size()).map(|i| o[i] == 0.0 ? 0.0 : s[i] / o[i]))
+  assert_eq(o[0], 0.0)
+  assert_samples(against(|g| g.above(sine(g), 0.0)), iota(s.size()).map(|i| s[i] > o[i] ? 1.0 : 0.0))
+  assert_samples(against(|g| g.below(sine(g), 0.0)), iota(s.size()).map(|i| s[i] < o[i] ? 1.0 : 0.0))
+  assert_samples(against(|g| g.select(sine(g), 0.0, 0.25)), iota(s.size()).map(|i| s[i] > 0 ? o[i] : 0.25))
+}
+
 // ---- what is checked
 
 let g = Audio.Graph.new(rate: RATE)
@@ -259,6 +279,9 @@ for (call, kind, message) in [
   (|| g.round(w, Math.inf), "ValueError", "a round's step is a finite number above 0"),
   (|| g.latch(w, Math.inf), "ValueError", "a latch's trigger is a finite number"),
   (|| g.latch(w).trigger.ramp(0.5, Math.inf), "ValueError", "a latch's trigger is a finite number"),
+  (|| g.divide(w, Math.inf), "ValueError", "what a part divides by or compares with is a finite number"),
+  (|| g.above(w).than.ramp(0.5, Math.inf), "ValueError", "what a part divides by or compares with is a finite number"),
+  (|| g.select(w, b: Math.inf), "ValueError", "a select's a and b are finite numbers"),
   (|| w.connect(g.impulse()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),
   (|| w.connect(g.dust()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),
   (|| w.connect(g.lfnoise()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),

@@ -1910,7 +1910,8 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
   # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
-  # dust's density, a room's size and damp, a latch's trigger.
+  # dust's density, a room's size and damp, a latch's trigger, a divide's
+  # by, an above's and a below's than, a select's a and b.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -1923,6 +1924,10 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     size = nil
     damp = nil
     trigger = nil
+    by = nil
+    than = nil
+    a = nil
+    b = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -2099,6 +2104,36 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     }
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
+    }
+    # The natural log of what comes in, which is taken as 1e-12 where it is
+    # less (0 and below among it).
+    log(input: AudioGraphPart) {
+      @_part("math", "log", [input], [-1.0, 1.0])
+    }
+    # What comes in divided by `by`; 0 where `by` is 0.
+    divide(input: AudioGraphPart, by: Long | Float = 1.0) {
+      let p = @_part("pair", "divide", [input], [by])
+      p.by = @_value(p, 0)
+      p
+    }
+    # 1 where what comes in is above `than`, 0 where it is not.
+    above(input: AudioGraphPart, than: Long | Float = 0.0) {
+      let p = @_part("pair", "above", [input], [than])
+      p.than = @_value(p, 0)
+      p
+    }
+    # 1 where what comes in is below `than`, 0 where it is not.
+    below(input: AudioGraphPart, than: Long | Float = 0.0) {
+      let p = @_part("pair", "below", [input], [than])
+      p.than = @_value(p, 0)
+      p
+    }
+    # `a` where what comes in is above 0, `b` where it is not.
+    select(input: AudioGraphPart, a: Long | Float = 1.0, b: Long | Float = 0.0) {
+      let p = @_part("select", "", [input], [a, b])
+      p.a = @_value(p, 0)
+      p.b = @_value(p, 1)
+      p
     }
     # What comes in rounded to the nearest multiple of `step` (a half going
     # up): `step` is a number above 0.
@@ -6233,10 +6268,21 @@ let _synth_module = fn () {
     __mul__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
       node("gain", [self._signal()], {gain: other}, {})
     }
-    __div__(other: Long | Float) {
+    # By a number, a gain of its inverse; by a signal, 0 where it is 0.
+    __div__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
       let s = self._signal()
-      __raise("ValueError", "Synth: a part divided by 0") if other == 0
-      s * (1.0 / other)
+      __raise("ValueError", "Synth: a part divided by 0") if channels_or_one(other).any(|c| is_number(c) && c == 0)
+      is_number(other) ? s * (1.0 / other) : node("divide", [s], {by: other}, {})
+    }
+    # `other / self`, 0 where the signal is 0.
+    __rdiv__(other: Long | Float | SynthEnvelope | Array) {
+      node("divide", [other], {by: self._signal()}, {})
+    }
+    # `n ** self` for a number `n` above 0: e to the power of the signal
+    # times log n.
+    __rpow__(other: Long | Float) {
+      __raise("ValueError", "Synth: a number to the power of a part is finite and above 0") unless finite(other) && other > 0
+      exp_of(self._signal() * Math.log(other))
     }
     __neg__() {
       self._signal() * -1.0
@@ -6289,6 +6335,23 @@ let _synth_module = fn () {
     # The signal's size.
     abs() {
       node("math", [self], {}, {kind: "abs", lo: -1.0, hi: 1.0})
+    }
+    # e to the power of the signal.
+    exp() {
+      exp_of(self)
+    }
+    # The signal's natural log, of 1e-12 where it is less (0 and below
+    # among it).
+    log() {
+      node("math", [self], {}, {kind: "log", lo: -1.0, hi: 1.0})
+    }
+    # 1 where the signal is above `other`, 0 where it is not.
+    gt(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      node("compare", [self], {than: other}, {kind: "above"})
+    }
+    # 1 where the signal is below `other`, 0 where it is not.
+    lt(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      node("compare", [self], {than: other}, {kind: "below"})
     }
     # The signal rounded to the nearest multiple of `step` (a half going up).
     round(step: Long | Float) {
@@ -6546,6 +6609,15 @@ let _synth_module = fn () {
     __raise("ValueError", "Synth.hz: note is a finite number") if !finite(note)
     440.0 * Math.exp(Math.log(2.0) * (note - 69) / 12.0)
   }
+  # `a` where `cond` is above 0, `b` where it is not.
+  let select = fn (
+    cond: Long | Float | SynthSignal | SynthEnvelope | Array,
+    a: Long | Float | SynthSignal | SynthEnvelope | Array,
+    b: Long | Float | SynthSignal | SynthEnvelope | Array,
+  ) {
+    node("select", [cond], {a: a, b: b}, {})
+  }
+
   # Decibels as a gain, a number's a number and a signal's a signal.
   let db = fn (x: Long | Float | SynthSignal | SynthEnvelope) {
     return exp_of(to_part(x) * (Math.log(10.0) / 20.0)) unless is_number(x)
@@ -6783,7 +6855,24 @@ let _synth_module = fn () {
         "abs" => g.abs(input),
         "clip" => g.clip(input, o.lo, o.hi),
         "round" => g.round(input, o.unit),
+        "log" => g.log(input),
         _ => g.exp(input),
+      },
+      "divide" => {
+        let q = g.divide(input, base_of(v.by, 0.0))
+        feed(b, p, q.by, v.by, 0.0)
+        q
+      },
+      "compare" => {
+        let q = o.kind == "above" ? g.above(input, base_of(v.than, 0.0)) : g.below(input, base_of(v.than, 0.0))
+        feed(b, p, q.than, v.than, 0.0)
+        q
+      },
+      "select" => {
+        let q = g.select(input, base_of(v.a, 0.0), base_of(v.b, 0.0))
+        feed(b, p, q.a, v.a, 0.0)
+        feed(b, p, q.b, v.b, 0.0)
+        q
       },
       "latch" => {
         let q = g.latch(input, base_of(v.trigger, 0.0))
@@ -6846,8 +6935,9 @@ let _synth_module = fn () {
   # (60 dB of a mode `width` Hz wide is 6.91 / (pi * width) seconds), a
   # filter's `cutoff / q` wide at its lowest cutoff (never, at 0; one a
   # signal moves adds none: the input's end decides), and a lag and a decay
-  # for their time; a size, a rounding, and a clip that holds 0, end with
-  # their input, and a latch two periods after it when an impulse at a fixed
+  # for their time; a size, a rounding, a quotient, and a clip that holds 0,
+  # end with their input, a comparison with the later of its two, a select
+  # with the later of its a and b, an exp and a log never, and a latch two periods after it when an impulse at a fixed
   # freq triggers it, never otherwise; an impulse and a dust end when their
   # freq or density is 0; a room rings on 60 dB past its input, as long as
   # its longest comb does at its largest size. A gated envelope ends once it
@@ -6919,6 +7009,10 @@ let _synth_module = fn () {
         "lag" | "decay" => tail(p.inputs[0]) + p.options.time,
         "room" => tail(p.inputs[0]) + room_ring(longest(p.values.size)),
         "latch" => latch_end(p),
+        # 0 divided by anything is 0; 0 is neither above nor below 0.
+        "divide" => tail(p.inputs[0]),
+        "compare" => Math.max(tail(p.inputs[0]), value_end(p.values.than)),
+        "select" => Math.max(value_end(p.values.a), value_end(p.values.b)),
         "math" => match p.options.kind {
           "abs" | "round" => tail(p.inputs[0]),
           "clip" => p.options.lo <= 0 && p.options.hi >= 0 ? tail(p.inputs[0]) : Math.inf,
@@ -7658,6 +7752,7 @@ let _synth_module = fn () {
     bandpass: bandpass,
     resonate: resonate,
     envelope: envelope,
+    select: select,
     hz: hz,
     db: db,
     render: render,

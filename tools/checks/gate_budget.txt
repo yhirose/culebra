@@ -170,6 +170,10 @@
 # processing written of the parts) in P15, adding no file: 4.0 -> 4.7 and
 # 3.8 -> 4.8 CPU s under --jit, 10 -> 12 and 10 -> 16 CPU s across the three
 # gc-stress runs (each new section's samples in a block of its own).
+# Both took log, divide, above, below and select (Synth's /, gt, lt, select,
+# exp, log and n ** p, a compressor and a gate, and their ends), adding no
+# file: 2.4 -> 2.8 and 1.3 -> 1.7 CPU s under --jit, 8.1 -> 9.6 and
+# 11.3 -> 16.2 CPU s across the three gc-stress runs.
 # 351 since test_synth_instrument.cul (Synth's render to a sound's own end, the
 # ends refused, and a Kauai voice made from an expression; 0.13 s under --vm,
 # 1.5 s under --jit). 352 since test_synth_proxy.cul (Synth.Proxy's fades in and
@@ -481,7 +485,9 @@ ctest.entries 45
 # 1266 since Synth.Mono in stdlib, in en and ja (one voice as a melody).
 # 1268 since Scene's distance_fade, in en and ja (a pair of levels
 # crossfading in a band; skipped, it needs a window).
-docs.blocks 1268
+# 1270 since Synth's dynamics, in en and ja (a compressor and a gate written
+# with log, gt and db of a signal).
+docs.blocks 1270
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

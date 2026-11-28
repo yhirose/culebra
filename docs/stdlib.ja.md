@@ -8959,6 +8959,10 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.abs(input)` | `input`の大きさ |
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `lo`から`hi`の間に収めた`input` |
 | `g.exp(input)` | eの`input`乗 |
+| `g.log(input)` | `input`の自然対数。1e-12より小さいところ（0以下も含む）は1e-12とみなすので、無限大やNaNは出ない |
+| `g.divide(input, by = 1.0)` | `input`を`by`で割ったもの。`by`が0のところは0 |
+| `g.above(input, than = 0.0)` / `g.below(input, than = 0.0)` | `input`が`than`より大きい（小さい）ところで1、そうでないところで0 |
+| `g.select(input, a = 1.0, b = 0.0)` | `input`が0より大きいところで`a`、そうでないところで`b` |
 | `g.round(input, step)` | `input`を、`step`（0より大きい数）の倍数のうち最も近いものに丸める（半分は切り上げ。`floor(x / step + 0.5) * step`） |
 | `g.latch(input, trigger = 0.0)` | `trigger`が0以下から正に変わった最後のサンプルの`input`を、次にそうなるまで保つ（サンプル＆ホールド）。最初に変わるまでは0。最初のサンプルで`trigger`が正なら、そのサンプルを取る。取るサンプルではその場の入力を返すので、これを通るループにも遅延が要る。`trigger`は値（下記）なので、つないだ部品がトリガーになる（`g.impulse(4000.0).connect(l.trigger)`） |
 | `g.room(input, size = 0.5, damp = 0.5, side = 0)` | 部屋の片側（Freeverb。減衰つきの櫛形フィルタ8本と全域通過4本）。`input`の響きだけを返す。`side`は0が左、1が右で、右は遅延が23サンプル長いので、同じ入力の左右が別々に響く。遅延の長さはグラフのレートに比例する。`size`（0から1）は響きの長さ（60 dBまで、0で約0.7秒、0.5で1.5秒、1で12秒）、`damp`（0から1）は高い音が消える速さ。鳴っている間はずっと計算する |
@@ -8972,7 +8976,8 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 
 部品の中で動かせるものを値と呼びます。波の`freq`、`feedback`、`phase`、フィルタの`cutoff`、
 gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`、impulseとlfnoiseの`freq`、
-dustの`density`、roomの`size`と`damp`、latchの`trigger`が、それぞれ部品のフィールドになっています。
+dustの`density`、roomの`size`と`damp`、latchの`trigger`、divideの`by`、aboveとbelowの`than`、
+selectの`a`と`b`が、それぞれ部品のフィールドになっています。
 値は、予約した値に、つないだ部品の出力の和をサンプルごとに足したものです。Web Audioの`AudioParam`と同じです。
 `lfo.connect(w.freq)`はlfoを波のfreqにHzとして足し、`lfo.connect(d.time)`は遅延のtimeに秒として足します。
 つないだ部品が動かした値は、部品が壊れない範囲に収めます。波とimpulseとlfnoiseのfreqとcutoffは0から`rate`の半分、
@@ -10133,6 +10138,7 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.envelope(x, gain, rate = nil)` | 部品には`x * gain`、サンプルには`Audio.envelope(x, gain, rate)`（`gain`は`(at, value)`のエンベロープ） |
 | `Synth.hz(note) -> Float \| SynthPart` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1。部品かエンベロープを渡すと、Hzの信号を返す（`sine(hz(60.0 + sine(5.0) * 0.3))`は0.3半音のビブラート） |
 | `Synth.db(x) -> Float \| SynthPart` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5。部品かエンベロープを渡すと、信号を返す |
+| `Synth.select(cond, a, b)` | `cond`が0より大きいところで`a`、そうでないところで`b`。`Audio.Graph`の`select`と同じ。どれも数、部品、エンベロープ、配列のいずれか |
 | `Synth.render(expr, seconds = nil, rate = 44100, channels = 1) -> Array` | 式（部品、エンベロープ、`Voices`）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する。`seconds`を省くと自然な終わり（下の説明）まで描き、自然に終わらない式は`ValueError`。`channels: 2`なら`[左, 右]`（下の説明） |
 
 | 部品のメソッド | 動作 |
@@ -10150,12 +10156,16 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `p.decay2(attack, decay)` | `p`のインパルスを、約`attack`秒で立ち上がり`decay`秒で60 dB下がるエンベロープにする（0 < `attack` < `decay`）。`decay`秒の`Audio.Graph`の`decay`から、`attack`秒のものを引いたもの。山は1より低く、2つが離れるほど1に近い |
 | `p.clip(lo, hi)` | `lo`から`hi`の間に収めた`p` |
 | `p.abs()` | `p`の大きさ |
+| `p.exp()` | eの`p`乗 |
+| `p.log()` | `p`の自然対数。`p`が1e-12より小さいところ（0以下も含む）は1e-12とみなす。`Audio.Graph`の`log`と同じ。`p.abs().log() * (20.0 / Math.log(10.0))`は、`p`の大きさをデシベルで表したもの |
+| `p.gt(x)` / `p.lt(x)` | `p`が`x`（数、部品、エンベロープ、配列）より大きい（小さい）ところで1、そうでないところで0。`Audio.Graph`の`above`と`below`と同じ。`select`、`latch`（0より大きくなるとトリガーになる）、`*`と組み合わせると、音を切り替えられる |
 | `p.round(step)` | `p`を`step`（0より大きい数）の倍数に丸める。`Audio.Graph`の`round`と同じ。`p.round(0.25)`は、-1から1を9段階にする |
 | `p.latch(trigger)` | `trigger`が0以下から正に変わった最後の時点の`p`を、次にそうなるまで保つ。`Audio.Graph`の`latch`と同じで、最初に変わるまでは0。`p.latch(impulse(4000.0))`は、各サンプルを4分の1ミリ秒ずつ保つ |
 | `p.mix()` | 束のチャンネルを足して1つの部品にする。部品はそのまま |
 | `p.pan(pos)` | `p`を、-1（左）から1（右）の`pos`に等パワーで置いたステレオ。左はsin((1 - pos)π/4)倍、右はsin((1 + pos)π/4)倍で、0なら左右とも約0.707倍。2チャンネルの束は、各チャンネルを自分の側で絞る。`pos`は-1から1の数（範囲の外は`ValueError`）、または部品かエンベロープで、-1..1に収める |
 | `p.reverb(mix = 0.33, room = 0.5, damp = 0.5)` | `p`を部屋に置いたステレオ。チャンネルの和を左右それぞれの部屋（`Audio.Graph`の`room`）に入れ、各側は乾いた音（1チャンネルなら左右とも）の`1 - mix`と、自分の部屋の`mix`の和。`room`（0から1）は響きの長さ、`damp`（0から1）は高い音が消える速さで、部品かエンベロープで動かすと0..1に収める。`mix`は0から1の数で、0なら部屋を作らない。3チャンネル以上の束は`ValueError` |
-| `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ、配列。`+`、`-`、`*`は、数、エンベロープ、配列が左でもよい（`2.0 - p`）。`/`は数で割るときだけで、0なら`ValueError` |
+| `p + x`、`p - x`、`p * x`、`p / x`、`-p` | 部品の和、差、積（音量）、商。右は数、部品、エンベロープ、配列。`+`、`-`、`*`、`/`は、数、エンベロープ、配列が左でもよい（`2.0 - p`）。部品かエンベロープで割ると、それが0のところは0（`Audio.Graph`の`divide`と同じ）。数で割ると、その逆数を掛ける音量になり、0なら`ValueError` |
+| `n ** p` | 数`n`（0より大きい有限の数。それ以外は`ValueError`）の`p`乗。`2.0 ** (p / 12.0)`は、`p`半音分の周波数の比 |
 
 値や部品の場所に配列を渡すと、要素ごとに1チャンネルになり、作られるものは束
 （チャンネルごとの部品）です。1チャンネルのものは、各チャンネルに渡ります。
@@ -10207,7 +10217,8 @@ let sound = Audio.Sound.new(sides)  # ステレオのSound
 狭いモードが60 dB減衰する分だけ、余韻が続きます（フィルタは、最も低い`cutoff`での
 幅`cutoff / q`のモードとして数え、それが0ならその時の値を保つので終わりません。信号で動く`cutoff`は余韻を足しません）。
 lagとdecayはその時間の分、roomは最も大きいsizeでの響きが60 dB下がる分（最も長い櫛形フィルタが1周ごとに帰す分で減り、続いて最も長い全域通過が鳴る分。0.5で1.6秒）だけ続き、大きさ（`abs`）と丸め（`round`）と、0を含む範囲の`clip`は
-入力と一緒に終わります。latchは最後に取った値を保つので、トリガーが一定の`freq`の
+入力と一緒に終わります。商も入力と一緒に終わり（0を何で割っても0）、比較と`select`は2つのうち遅く終わる方で終わり、
+`exp`、`log`、数の部品乗は終わりません。latchは最後に取った値を保つので、トリガーが一定の`freq`の
 `impulse`なら、入力が終わってからその2周期後（それまでに0を取る）に終わり、ほかのトリガーでは
 終わりません（後ろに`* perc(...)`を掛ければ、そこで終わります）。impulseとdustは、`freq`や`density`が0なら終わり、
 lfnoiseは終わりません。ループは、終わりを決められないまま鳴り続けます。`play`は、待たずに鳴らした
@@ -10399,6 +10410,21 @@ let slewed = feedback(|y| y.delay(0.0) + (x - y.delay(0.0)).clip(-0.01, 0.01))
 let shaped = x - x * x * x / 3.0
 let coarse = x.round(0.25).latch(impulse(4000.0))  # 9段階、1秒に4000サンプル
 println(render(coarse, 0.01).size())  # => 441
+```
+
+ダイナミクス系の処理は、デシベルで表した音量と、そこから作る倍率で書きます。
+コンプレッサは音量を追い、しきい値を超えた分を比率で下げます。ゲートは、音量が
+しきい値より小さい間は音を閉じ、クリックしないように切り替えをなめらかにします。
+
+```culebra
+let {saw, sine, db, render} = Synth
+let x = saw(110.0) * sine(0.5).abs()
+let level = x.abs().lag(0.01).log() * (20.0 / Math.log(10.0))  # デシベル
+let over = (level + 18.0).clip(0.0, 120.0)  # -18 dBを超えた分
+let compressed = x * db(over * -0.75)  # 4:1
+let gated = x * x.abs().lag(0.01).gt(0.1).lag(0.005)
+println(render(compressed, 1.0).map(|v| Math.abs(v)).max() < render(x, 1.0).map(|v| Math.abs(v)).max())  # => true
+println(render(gated, 0.01).all(|v| v == 0.0))  # => true
 ```
 
 部品とサンプルの両方を受ける5つの関数は、名前を取り込めば、サンプルを部品と
