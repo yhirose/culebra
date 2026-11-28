@@ -937,4 +937,28 @@ test_a_run_checks_what_an_instance_does = fn () {
 }
 test_a_run_checks_what_an_instance_does()
 
+# A field parameter's type error is reported where the boxed prologue
+# reports it, at the `new`, whether or not the construction is spliced.
+@value
+class FieldParams {
+  x: Float
+  y: Float
+  new(@x, @y) {}
+  __add__(o) { FieldParams(self.x + o.x, self.y + o.y) }
+}
+
+test_field_param_error_position_matches_boxed = fn () {
+  let n = 3
+  let at = fn (e) { (e.line, e.col) }
+  let boxed = try { FieldParams(1.0, n) } catch e { at(e) }
+  let spliced = try {
+    let v = FieldParams(1.0, n) + FieldParams(2.0, 3.0)
+    v.x
+  } catch e {
+    at(e)
+  }
+  assert_eq(spliced, boxed)
+}
+test_field_param_error_position_matches_boxed()
+
 inspect('value-inline OK')

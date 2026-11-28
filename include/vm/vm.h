@@ -12547,7 +12547,8 @@ class Compiler {
     const int32_t temp_slot_base = next_slot_;
     // A constructor's field parameters store into the run before the body,
     // as the boxed `new` stores them before its own statements — through
-    // the same field type check, at the parameter's position.
+    // the same field type check, at the same position: the `new` itself
+    // (its prologue's, emit_declared_field_stores).
     if (is_ctor) {
       for (size_t i = 0; i < ps.size(); i++) {
         if (!ps[i].field) continue;
@@ -12555,7 +12556,7 @@ class Compiler {
         auto at = std::find(layout->begin(), layout->end(), ps[i].name);
         assert(b && at != layout->end() && "a field parameter names a field");
         auto ix = static_cast<size_t>(at - layout->begin());
-        StampGuard pos(*this, *ps[i].at);
+        StampGuard pos(*this, member);
         // An annotated parameter was just checked against the same scalar
         // type (check_field_params holds the two identical), so only an
         // unannotated `@x` on a typed field has the field's check to make.
