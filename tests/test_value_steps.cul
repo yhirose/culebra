@@ -143,9 +143,9 @@ assert_eq(read_let(s), 4.0)
 
 # `__rmul__` answers rather than `__mul__` (they differ here, so the wrong
 # one shows), `__rsub__` answers `k - v`, and with no reflected dunder `+`
-# and `*` fall back to `v`'s own, as the boxed dispatch does. `k` is a
-# literal, a `let` of one, arithmetic of those, or a parameter annotated as
-# a number.
+# and `*` fall back to `v`'s own, as the boxed dispatch does (that one stays
+# boxed: a trait's default may answer instead). `k` is a literal, a `let` of
+# one, arithmetic of those, or a parameter annotated as a number.
 @value
 class R {
   x: Float
@@ -266,3 +266,64 @@ fn nested_names(n) {
   (p.x + d, p.y)
 }
 assert_eq(nested_names(2), (11.0, 1.0 + 0.5 + 2.0))
+# A number's name redeclared in a loop body as something else is that other
+# binding there: `k * v` dispatches on what it is (an object's own
+# `__mul__`), as the boxed form does.
+class Obj {
+  new() {}
+  __mul__(o) { R(o.x * 1000.0) }
+}
+fn shadowed(n) {
+  let k = 2.0
+  mut p = R(1.0)
+  let v = R(0.5)
+  for _ in 0..n {
+    let k = Obj()
+    p = p + k * v
+  }
+  p.x
+}
+assert_eq(shadowed(1), 501.0)
+# A reflected dunder declared as overloads, or answered by a trait's
+# default, is what answers: never `__mul__` in its place.
+@value
+class O {
+  x: Float
+  new(@x) {}
+  __add__(o) { O(self.x + o.x) }
+  __mul__(k) { O(self.x * k) }
+  __rmul__(k: Float) { O(self.x * k + 100.0) }
+  __rmul__(k: Long) { O(self.x * k + 200.0) }
+}
+fn overloaded(n) {
+  let k = 2.0
+  mut p = O(1.0)
+  let v = O(0.5)
+  for _ in 0..n {
+    p = p + k * v
+  }
+  p.x
+}
+assert_eq(overloaded(1), 102.0)
+trait Scaled {
+  scale(k)
+  __rmul__(k) { self.scale(k + 100.0) }
+}
+@value
+class D {
+  x: Float
+  new(@x) {}
+  __add__(o) { D(self.x + o.x) }
+  __mul__(k) { D(self.x * k) }
+  scale(k) { D(self.x * k) }
+}
+fn defaulted(n) {
+  let k = 2.0
+  mut p = D(1.0)
+  let v = D(0.5)
+  for _ in 0..n {
+    p = p + k * v
+  }
+  p.x
+}
+assert_eq(defaulted(1), 52.0)

@@ -232,6 +232,29 @@ struct FnAnalysis {
     return names->second;
   }
 
+  // The declaration a name node means (resolve.h's `declared_at`), the
+  // same wherever and whenever the compiler asks — unlike a scope lookup,
+  // which answers for the scope the compile has reached. nullptr when
+  // nothing declares it.
+  const peg::Ast* declaration_of(const peg::Ast& name) const {
+    size_t sym = symbol_of(name);
+    return sym == culebra::resolve::kNone ? nullptr : res_.symbols[sym].declared_at;
+  }
+  // Whether `name`'s variable is declared once, in that one form: what binds
+  // it is the declaration being compiled, and nothing rebinds it.
+  bool declared_once_as(const peg::Ast& name, culebra::resolve::Form form) const {
+    size_t sym = symbol_of(name);
+    if (sym == culebra::resolve::kNone) return false;
+    const auto& s = res_.symbols[sym];
+    return s.declarations == 1 && s.forms == (uint16_t{1} << static_cast<int>(form));
+  }
+  // The declarations whose every read is a Long or a Float (vm.h's
+  // static_number), by declaration_of's node: a `let` of a number, or a
+  // parameter annotated as one. Filled as they compile and never taken
+  // back, so a question asked before one compiles answers no, and one asked
+  // after, yes.
+  std::unordered_set<const peg::Ast*> number_declarations;
+
   // `session`: the names earlier inputs of a session declared, when
   // `session_top` (resolve::Options::session).
   FuncInfo analyze_program(const peg::Ast& programAst,

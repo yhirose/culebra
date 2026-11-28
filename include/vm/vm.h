@@ -5132,11 +5132,6 @@ class Compiler {
     // The same, for the fields whose annotation names another class: what
     // `let car = self.car` hands `car`, so `car.speed` knows its type.
     const culebra::ClassFieldClasses* decl_field_classes = nullptr;
-    // Every read of this name is a Long or a Float: a binding written once,
-    // in this frame's own slot (not a cell a closure could see written
-    // again), by a number (static_number) or as a parameter annotated as
-    // one. What lets `k * v` dispatch to `v`'s reflected method unasked.
-    bool number = false;
     // What reading this name tells the compiler, and the cell that answer
     // is anchored to. One record because the parts are granted together
     // (settle_callee), carried together through a capture list, and struck
@@ -5824,10 +5819,13 @@ class Compiler {
     if (b.known.cell < 0) b.known.cell = prog_.next_known_cell++;
   }
 
-  // Binding::number, for a binding just declared: only one written once,
-  // in its own slot.
-  static void grant_number(Binding& b, bool number) {
-    b.number = number && !b.is_cell && !b.lazy && binding_writes_once(b);
+  // A declaration just compiled whose every read is a number
+  // (FnAnalysis::number_declarations): `name`, declared once in `form`, by
+  // a number. What lets `k * v` dispatch to `v`'s reflected method unasked.
+  void grant_number(const peg::Ast& name, culebra::resolve::Form form,
+                    bool number) {
+    if (number && analysis_.declared_once_as(name, form))
+      analysis_.number_declarations.insert(analysis_.declaration_of(name));
   }
 
   // Whether an annotation admits only Longs and Floats (`Float`, `Long`,
@@ -5846,10 +5844,12 @@ class Compiler {
   bool static_number(const peg::Ast& e) {
     using namespace peg::udl;
     if (auto v = literal_scalar(e)) return v->tag == TAG_LONG || v->tag == TAG_FLOAT;
-    if (e.tag == "IDENTIFIER"_) {
-      const Binding* b = lookup_name(e.token);
-      return b && b->number;
-    }
+    // By the declaration the name means, not the binding the compile's scope
+    // holds now: a round asks before the statements it decides compile, and
+    // a name redeclared among them (`let k = Obj()` in a loop body) is
+    // another declaration, not yet known to be a number.
+    if (e.tag == "IDENTIFIER"_)
+      return analysis_.number_declarations.contains(analysis_.declaration_of(e));
     if (e.tag == "UNARY_MINUS"_) return e.nodes.size() >= 2 && static_number(*e.nodes[1]);
     if ((e.tag != "ADDITIVE"_ && e.tag != "MULTIPLICATIVE"_) || e.nodes.size() < 3)
       return false;
@@ -9587,6 +9587,10 @@ class Compiler {
           if (auto t = _culebra_type_tags(pl.type); t.exact)
             fc.emit(Op::ArgTag, pl.slot, t.set);
       }
+      if (!pl.is_mut && !pl.sink && !pl.type.empty())
+        fc.grant_number(culebra::param_name_node(*pl.at),
+                        culebra::resolve::Form::Parameter,
+                        annotation_is_number(pl.type));
       if (pl.sink) {
         // `fn (_, x)`: the argument's +1 is dropped rather than bound, so a
         // repeated `_` needs no slot of its own.
@@ -9609,7 +9613,6 @@ class Compiler {
         if (!pl.is_mut && !pl.type.empty()) {
           b.decl_fields = culebra::class_field_types_of(pl.type);
           b.decl_field_classes = culebra::class_field_classes_of(pl.type);
-          fc.grant_number(b, annotation_is_number(pl.type));
         }
       }
     }
@@ -9940,9 +9943,9 @@ class Compiler {
       } else {
         store_into(slot, rhs, /*dst_is_fresh=*/true);
       }
-      bool number = static_number(*av.rhs);
       push_binding(*tgt, {name, slot, decl_mut, cell});
-      grant_number(scopes_.back().bindings.back(), number);
+      if (av.is_let && !av.is_mut)
+        grant_number(*tgt, culebra::resolve::Form::Let, static_number(*av.rhs));
       grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
       grant_known_const(scopes_.back().bindings.back(), *av.rhs);
       grant_declared_class(scopes_.back().bindings.back(), *av.rhs,
@@ -11009,6 +11012,18 @@ class Compiler {
     }
     return found;
   }
+  // Whether the class declares an instance method `name`, one or an
+  // overload set: what value_member_ast cannot tell from an absent one.
+  static bool class_declares_method(const peg::Ast& class_ast,
+                                    std::string_view name) {
+    size_t dec_end = culebra::first_non_decorator_index(class_ast);
+    for (size_t i = dec_end + 1; i < class_ast.nodes.size(); i++) {
+      auto mv = culebra::view_method(*class_ast.nodes[i]);
+      if (!mv.is_field && !mv.is_typed_field && !mv.is_static && mv.name == name)
+        return true;
+    }
+    return false;
+  }
   // Whether a type annotation is known to pass every instance of
   // `class_name` whatever its fields hold: the class itself (its type
   // arguments, if written, are not checked), or Any. Only such an annotation
@@ -11333,6 +11348,12 @@ class Compiler {
   // fold_steps' reflected head: the dunder `v` answers `k op v` with, when
   // `k` is a number and `v` a run outside any member body (whose `self`
   // the receiver rules govern). nullopt for a fold read left to right.
+  //
+  // Of arith_asks' asks the first on the right operand is its reflected
+  // method, and the class answers it if it declares it, an overload set
+  // included (dunder_splices then declines that). A class that does not
+  // declare it may still answer it with a trait's default, which only the
+  // run time knows, so a later ask is never taken for the one that answers.
   std::optional<std::string_view> reflected_first(const peg::Ast& fold) {
     using namespace peg::udl;
     const peg::Ast& v = *fold.nodes[2];
@@ -11344,8 +11365,9 @@ class Compiler {
     auto s = op ? special_for_op(*op) : std::nullopt;
     if (!s) return std::nullopt;
     for (auto [right, m] : arith_asks(*s)) {
+      if (!right) continue;  // a number has no methods of its own
       std::string_view name = special_name(m);
-      if (right && value_method_ast(*cls, name)) return name;
+      return class_declares_method(*cls, name) ? std::optional(name) : std::nullopt;
     }
     return std::nullopt;
   }
@@ -12335,14 +12357,20 @@ class Compiler {
     // being compiled afresh, in a scope whose outer bindings may differ.
     // The old answers are dropped rather than reused: everything here is
     // decided from scratch, as it was the first time.
+    // Everything inside it compiles afresh too, so the answers of the lists
+    // nested in it go with its own, whichever round made them.
     if (auto prev = round_starts_.find(list);
-        prev != round_starts_.end() && prev->second >= i) {
-      std::erase_if(decided_, [&](const auto& d) {
-        if (d.second != list) return false;
-        value_unboxed_.erase(d.first);
+        prev != round_starts_.end() && prev->second.start >= i) {
+      const peg::Ast& first = *stmts.front();
+      const peg::Ast& last = *stmts.back();
+      std::erase_if(decided_, [&](const peg::Ast* d) {
+        if (!within(*d, first, last)) return false;
+        value_unboxed_.erase(d);
         return true;
       });
-      round_starts_.erase(prev);
+      std::erase_if(round_starts_, [&](const auto& r) {
+        return within(*r.second.first, first, last);
+      });
     }
     // Answered by an earlier round, of this list or of one it is nested in.
     // Not answered: its class was not registered when that round ran, so it
@@ -12374,9 +12402,8 @@ class Compiler {
                   std::exchange(round_splices_, &splices)};
     // The candidates of the lists nested in this one's later statements (a
     // loop body's `let d = v * DT`) join the round too, so a run consumed
-    // there is decided together with what consumes it, and its answer is
-    // this list's to keep (decided_ is where the nested list's compile
-    // finds it).
+    // there is decided together with what consumes it; the nested list's
+    // own compile finds the answer in decided_.
     std::set<std::string> seen;
     std::vector<const peg::Ast*> nested;
     // Where each name occurs in what the round walks, first and last, read
@@ -12409,11 +12436,11 @@ class Compiler {
         // Two candidates sharing a name are two bindings this walk cannot
         // tell apart — the same reason a shadow declines. Neither is
         // assumed, and neither is decided here.
+        if (in && !only_in(*c, *in)) continue;
         if (!seen.insert(c->name).second) {
           live.erase(c->name);
           continue;
         }
-        if (in && !only_in(*c, *in)) continue;
         // One an earlier round of this same pass already answered keeps that
         // answer: it is what the bindings compiled since were classified
         // against.
@@ -12464,10 +12491,10 @@ class Compiler {
       }
     }
     for (const auto& c : cands) {
-      decided_[c.decl] = list;
+      decided_.insert(c.decl);
       if (live.contains(c.name)) value_unboxed_[c.decl] = {c.layout, c.cls};
     }
-    round_starts_[list] = i;
+    round_starts_[list] = {i, stmts.front().get()};
   }
 
   // A `fn`, a multi-fn, a class or an enum literal: its names are its own,
@@ -12493,12 +12520,22 @@ class Compiler {
     for (const auto& n : node.nodes) each_nested_list(*n, f);
   }
 
-  // Per statement list: where its current round started.
-  std::map<const void*, size_t> round_starts_;
-  // Every declaration a round has answered, and the list whose round it was
-  // — one nested in that list among them: they were answered together, so
-  // they are dropped together when that list is compiled afresh.
-  std::map<const peg::Ast*, const void*> decided_;
+  // Per statement list: where its current round started, and its first
+  // statement, which places it.
+  struct RoundStart {
+    size_t start;
+    const peg::Ast* first;
+  };
+  std::map<const void*, RoundStart> round_starts_;
+  // Every declaration a round has answered, a nested list's by an enclosing
+  // round among them.
+  std::set<const peg::Ast*> decided_;
+  // Whether `n` is written among the statements from `first` to `last`.
+  static bool within(const peg::Ast& n, const peg::Ast& first,
+                     const peg::Ast& last) {
+    return n.path == first.path && n.position >= first.position &&
+           n.position < last.position + last.length;
+  }
 
   // Every IDENTIFIER node the body reads, stopping at a nested declaration
   // (whose names are its own). A property name rides its DOT node rather

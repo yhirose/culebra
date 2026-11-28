@@ -946,16 +946,21 @@ one instance, one splice, still no object built. The left operand's own
 dunder is the one the boxed dispatch reaches first, so an operand[0]
 proven a run reaches exactly that method.
 
-A number on the left (`k * v`) has no operator methods, so of the methods
-the boxed dispatch asks, in the runtime's order (`arith_asks`), the first
-`v` has answers: `v.__rmul__(k)`, and for `+` and `*` with none, `v`'s own,
-`v.__mul__(k)`. The compiler reads the same order. When `k` is known to be
-a number, that dunder is the one spliced, with `v` as the receiver: a numeric
-literal, a name whose every read is one (`Binding::number`: written once,
-in the frame's own slot, by a number or as a parameter annotated `Long`,
-`Float` or `Long | Float`), or arithmetic of those (`static_number`). A
-`mut`, a name a closure captures, or anything whose type is a question for
-run time keeps the operator. `fold_steps` is the one place a fold is read
+A number on the left (`k * v`) has no operator methods, so the boxed
+dispatch asks `v`'s next, in the runtime's order (`arith_asks`): its
+reflected method `v.__rmul__(k)`, then for `+` and `*` its own
+`v.__mul__(k)`. When `k` is known to be a number and `v`'s class declares
+the reflected method, that method is spliced with `v` as the receiver (an
+overload set declines, as on the left). A class that does not declare it
+may still answer it through a trait's default, which only the run time
+knows, so `k * v` on a class with only `__mul__` keeps the operator. `k` is
+a number when it is a numeric literal, a name whose declaration is one
+(`FnAnalysis::number_declarations`: a `let` of a number declared once, or a
+parameter annotated `Long`, `Float` or `Long | Float`), or arithmetic of
+those (`static_number`). A name is asked by the declaration the resolver
+gives it, not by the binding in scope where the compile is, so a round that
+decides before a loop body compiles and the body's own compile agree about
+a `let k = ...` the body redeclares. `fold_steps` is the one place a fold is read
 as a head and its steps (each a dunder and its operand): `k op v ...`
 reads as head `v`, first step the reflected dunder with `k`, and every
 lookahead, walk and emitter of a fold takes the fold from there. `k` is

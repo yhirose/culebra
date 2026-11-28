@@ -243,6 +243,29 @@ fn f(n) {
 }' \
 ' (ValueBox|Call|CallM|Add|Mul) .*; 1[1-4]:' 0
 
+# A nested `let` of a name the round also binds outside that body does not
+# join the round, and costs the outer binding nothing.
+check "a nested let of a shared name leaves the outer run unboxed" \
+'@value
+class V2 {
+  x: Float
+  new(@x) {}
+  __add__(o) { V2(self.x + o.x) }
+  __mul__(k) { V2(self.x * k) }
+}
+fn f(n) {
+  mut p = V2(1.0)
+  let v = V2(0.5)
+  for _ in 0..n {
+    let d = v * 0.5
+    IO.inspect(d)
+  }
+  let d = V2(3.0)
+  for _ in 0..n { p = p + d }
+  p.x
+}' \
+' (ValueBox|Call|CallM) .*; 1[5-6]:' 0
+
 # A typed field whose annotation names a class with typed fields reads
 # those fields typed down the chain, as through a `let`.
 check "a typed field's class follows a chain" \
