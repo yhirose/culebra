@@ -9366,7 +9366,7 @@ it or to any of its parts and values.
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `input` held within `lo`..`hi` |
 | `g.exp(input)` | e to the power of `input` |
 | `g.log(input)` | the natural log of `input`, taken as 1e-12 where it is less (0 and below among it), so no infinity or NaN comes out |
-| `g.divide(input, by = 1.0)` | `input` divided by `by`, and 0 where `by` is 0 |
+| `g.divide(input, by = 1.0)` | `input` divided by `by`, and 0 where that is not a finite number (`by` 0, or so near 0 that the quotient overflows), so no infinity or NaN comes out |
 | `g.above(input, than = 0.0)` / `g.below(input, than = 0.0)` | 1 where `input` is above (below) `than`, 0 where it is not |
 | `g.select(input, a = 1.0, b = 0.0)` | `a` where `input` is above 0, `b` where it is not |
 | `g.round(input, step)` | `input` rounded to the nearest multiple of `step`, a number above 0 (a half goes up: `floor(x / step + 0.5) * step`) |
@@ -10652,7 +10652,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.mix()` | a bundle's channels added to one part; a part as it is |
 | `p.pan(pos)` | stereo, `p` placed at `pos` from -1 (left) to 1 (right) at equal power: the left times sin((1 - pos)π/4), the right times sin((1 + pos)π/4), so 0 is about 0.707 on each side. A bundle of two is turned down side by side, each channel on its own side. `pos` is a number from -1 to 1 (`ValueError` past it), or a part or an envelope, held within -1..1 |
 | `p.reverb(mix = 0.33, room = 0.5, damp = 0.5)` | stereo, `p` in a room: its channels' sum goes into a room of each side (`Audio.Graph`'s `room`), and each side is `1 - mix` of its dry sound (one channel on both sides) and `mix` of its room. `room` (0 to 1) sets how long the room rings and `damp` (0 to 1) how soon its highs go; a part or an envelope moves them, held within 0..1. `mix` is a number from 0 to 1, and 0 makes no room. A bundle of more than two is a `ValueError` |
-| `p + x`, `p - x`, `p * x`, `p / x`, `-p` | parts added, subtracted, multiplied (a gain) and divided, with a number, a part, an envelope or an Array on the right; a number, an envelope or an Array on the left of `+`, `-`, `*` and `/` too (`2.0 - p`). Divided by a part or an envelope, it is 0 where that is 0, as `Audio.Graph`'s `divide`; divided by a number, it is a gain of its inverse, and a `ValueError` for 0 |
+| `p + x`, `p - x`, `p * x`, `p / x`, `-p` | parts added, subtracted, multiplied (a gain) and divided, with a number, a part, an envelope or an Array on the right; a number, an envelope or an Array on the left of `+`, `-`, `*` and `/` too (`2.0 - p`). Divided by a part or an envelope, it is 0 where that is 0 or so near 0 that the quotient overflows, as `Audio.Graph`'s `divide`; divided by a number, it is a gain of its inverse, and a `ValueError` for 0 |
 | `n ** p` | a number `n` (finite and above 0, else `ValueError`) to the power of `p`: `2.0 ** (p / 12.0)` is the ratio of `p` semitones |
 
 An Array where a value or a part goes is a channel per item, and what is

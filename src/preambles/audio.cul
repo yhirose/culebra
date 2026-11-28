@@ -418,7 +418,8 @@ let _audio_module = fn () {
     log(input: AudioGraphPart) {
       @_part("math", "log", [input], [-1.0, 1.0])
     }
-    # What comes in divided by `by`; 0 where `by` is 0.
+    # What comes in divided by `by`; 0 where that is not a finite number
+    # (`by` 0, or so near 0 the quotient overflows).
     divide(input: AudioGraphPart, by: Long | Float = 1.0) {
       let p = @_part("pair", "divide", [input], [by])
       p.by = @_value(p, 0)

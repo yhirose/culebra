@@ -1787,7 +1787,9 @@ class Latch {
 };
 
 // What a Pair part answers for what comes in and its value: the one divided
-// by the other (0 where the value is 0), or 1 where what comes in is above
+// by the other (0 where the quotient is not a finite number: a value of 0,
+// or one so near 0 it overflows, so no infinity or NaN enters a graph), or
+// 1 where what comes in is above
 // (below) the value and 0 where it is not.
 enum class PairKind { Divide, Above, Below };
 
@@ -1795,7 +1797,10 @@ struct PairOp {
   PairKind kind;
   double step(double x, double v) const {
     switch (kind) {
-      case PairKind::Divide: return v == 0 ? 0.0 : x / v;
+      case PairKind::Divide: {
+        const double q = x / v;
+        return std::isfinite(q) ? q : 0.0;
+      }
       case PairKind::Above: return x > v ? 1.0 : 0.0;
       case PairKind::Below: return x < v ? 1.0 : 0.0;
     }
