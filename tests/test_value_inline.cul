@@ -949,15 +949,8 @@ class FieldParams {
 
 test_field_param_error_position_matches_boxed = fn () {
   let n = 3
-  let at = fn (e) { (e.line, e.col) }
-  let boxed = try { FieldParams(1.0, n) } catch e { at(e) }
-  let spliced = try {
-    let v = FieldParams(1.0, n) + FieldParams(2.0, 3.0)
-    v.x
-  } catch e {
-    at(e)
-  }
-  assert_eq(spliced, boxed)
+  assert_eq(thrown_at(fn () { (FieldParams(1.0, n) + FieldParams(2.0, 3.0)).x }),
+            thrown_at(fn () { FieldParams(1.0, n) }))
 }
 test_field_param_error_position_matches_boxed()
 

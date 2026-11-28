@@ -9662,7 +9662,9 @@ class Compiler {
       // with no initializer only has to put the field there, and a whole
       // culebra frame to do it was the reason declared fields cost MORE than
       // assigning in the constructor — the opposite of what a value type
-      // wants (docs/language.md §21).
+      // wants (docs/language.md §21). A store's type error reports at the
+      // `new`, as a spliced construction's does (emit_inline_body).
+      StampGuard pos(fc, ast);
       fc.emit_declared_field_stores(*mo.prologue_fields, provided);
     }
     // `@x?` left out by the caller: the parameter reads as the field the
@@ -12547,16 +12549,16 @@ class Compiler {
     const int32_t temp_slot_base = next_slot_;
     // A constructor's field parameters store into the run before the body,
     // as the boxed `new` stores them before its own statements — through
-    // the same field type check, at the same position: the `new` itself
-    // (its prologue's, emit_declared_field_stores).
+    // the same field type check, reported at the `new` as the boxed
+    // prologue's stores are.
     if (is_ctor) {
+      StampGuard pos(*this, member);
       for (size_t i = 0; i < ps.size(); i++) {
         if (!ps[i].field) continue;
         const Binding* b = lookup_name(ps[i].name);
         auto at = std::find(layout->begin(), layout->end(), ps[i].name);
         assert(b && at != layout->end() && "a field parameter names a field");
         auto ix = static_cast<size_t>(at - layout->begin());
-        StampGuard pos(*this, member);
         // An annotated parameter was just checked against the same scalar
         // type (check_field_params holds the two identical), so only an
         // unannotated `@x` on a typed field has the field's check to make.
