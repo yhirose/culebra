@@ -1,0 +1,219 @@
+# A statement that reads a field holding a flat `@value` instance through the
+# class's own arithmetic (`b.vel = b.vel + g * k`) compiles twice: a guard
+# checks that each such field holds an instance of the declaration the
+# statement was compiled against, the version after it reads the fields as
+# unboxed runs, and anything else runs the statement as written (vm.md
+# §5.3.6). What a program sees is the second version's, every case below:
+# the arithmetic, the class of what is stored, the errors, and the
+# statements the first version must not take.
+#
+# tests/resolve_shape_test.sh holds the bytecode side (the guard is there,
+# and the version after it calls nothing).
+
+@value
+class V3 {
+  x: Float
+  y: Float
+  z: Float
+
+  new(x: Float, y: Float, z: Float) {
+    @x = x
+    @y = y
+    @z = z
+  }
+
+  __add__(o) {
+    V3(@x + o.x, @y + o.y, @z + o.z)
+  }
+
+  __sub__(o) {
+    V3(@x - o.x, @y - o.y, @z - o.z)
+  }
+
+  __mul__(s) {
+    V3(@x * s, @y * s, @z * s)
+  }
+
+  dot(o) {
+    @x * o.x + @y * o.y + @z * o.z
+  }
+
+  cross(o) {
+    V3(@y * o.z - @z * o.y, @z * o.x - @x * o.z, @x * o.y - @y * o.x)
+  }
+
+  len() {
+    Math.sqrt(self.dot(self))
+  }
+}
+
+class Body {
+  pos: V3 = V3(0.0, 0.0, 0.0)
+  vel: V3 = V3(0.0, 0.0, 0.0)
+
+  push(g: V3, k: Float) {
+    @vel = @vel + g * k
+    @pos += @vel * k
+  }
+}
+
+let near = fn (v, x, y, z) {
+  assert_eq(v.x, x)
+  assert_eq(v.y, y)
+  assert_eq(v.z, z)
+}
+
+# The shapes the first version takes: a write of the field's own
+# arithmetic, a compound write, a `let` of a run and of a scalar, a field
+# read as a scalar, and the same through `@` in a member.
+fn test_writes_and_reads() {
+  let b = Body()
+  let g = V3(1.0, 2.0, 3.0)
+  let k = 0.5
+  for _ in 0..4 {
+    b.vel = b.vel + g * k
+    b.pos += b.vel * k
+  }
+  near(b.vel, 2.0, 4.0, 6.0)
+  near(b.pos, 2.5, 5.0, 7.5)
+  let d = b.pos - b.vel.cross(g)
+  near(d, 2.5, 5.0, 7.5)
+  let n = b.vel.len()
+  assert_eq(n, Math.sqrt(56.0))
+  let s = b.vel.x * 2.0 + b.pos.dot(g)
+  assert_eq(s, 4.0 + 2.5 + 10.0 + 22.5)
+  b.push(g, 1.0)
+  near(b.vel, 3.0, 6.0, 9.0)
+  near(b.pos, 5.5, 11.0, 16.5)
+}
+
+# What a write stores is an instance of the field's own class, frozen,
+# equal by its fields — and an alias taken before it, a key of a map and
+# an element of an array keep what they held.
+fn test_what_a_write_stores() {
+  let b = Body()
+  let g = V3(1.0, 1.0, 1.0)
+  let before = b.vel
+  let keyed = {}
+  keyed[b.vel] = 'zero'
+  let held = [b.vel]
+  b.vel = b.vel + g
+  near(before, 0.0, 0.0, 0.0)
+  near(held[0], 0.0, 0.0, 0.0)
+  assert_eq(keyed[V3(0.0, 0.0, 0.0)], 'zero')
+  assert_true(class_of(b.vel) == V3)
+  assert_eq(b.vel, V3(1.0, 1.0, 1.0))
+  assert_throws('ImmutableError', fn () {
+    b.vel.x = 5.0
+  })
+  b.vel += g
+  near(b.vel, 2.0, 2.0, 2.0)
+  near(before, 0.0, 0.0, 0.0)
+}
+
+# A field that holds nil, or an instance of another class of the same name,
+# runs the statement as written: its own methods, its own errors.
+fn test_other_values_run_as_written() {
+  class Loose {
+    v: V3
+  }
+  let l = Loose()
+  let g = V3(1.0, 1.0, 1.0)
+  let e = assert_throws('TypeError', fn () {
+    l.v = l.v + g
+  })
+  assert_true(e.message.contains('Nil'))
+  l.v = V3(1.0, 2.0, 3.0)
+  l.v = l.v + g
+  near(l.v, 2.0, 3.0, 4.0)
+
+  @value
+  class V3 {
+    x: Float
+    y: Float
+    z: Float
+
+    new(x: Float, y: Float, z: Float) {
+      @x = x
+      @y = y
+      @z = z
+    }
+
+    __add__(o) {
+      V3(@x * 10.0, @y * 10.0, @z * 10.0)
+    }
+  }
+  let other = Body()
+  other.vel = V3(1.0, 2.0, 3.0)
+  other.vel = other.vel + g
+  near(other.vel, 10.0, 20.0, 30.0)
+  assert_true(class_of(other.vel) == V3)
+}
+
+# The guard reads the field before the statement does, so the first version
+# is taken only where nothing the statement runs could write it in between:
+# here a getter of an operand moves the field the second operand reads.
+mut sneaky_target = nil
+class Sneaky {
+  get x() {
+    sneaky_target.vel = V3(100.0, 100.0, 100.0)
+    1.0
+  }
+  get y() {
+    1.0
+  }
+  get z() {
+    1.0
+  }
+}
+
+fn test_a_statement_that_runs_code_reads_as_written() {
+  let b = Body()
+  sneaky_target = b
+  b.pos = b.pos + Sneaky() + b.vel
+  near(b.pos, 101.0, 101.0, 101.0)
+}
+
+# Every instance a declaration builds is that declaration's, whichever run of
+# it built it: a class declared in a function is one declaration on every
+# call. What a write stores keeps the class of the instance it replaces,
+# here one the first call's class built, written by the second call.
+fn test_a_local_declaration_across_calls() {
+  let make = fn (start, given) {
+    @value
+    class P {
+      x: Float
+
+      new(x: Float) {
+        @x = x
+      }
+
+      __add__(o) {
+        P(@x + o.x)
+      }
+    }
+    class Holder {
+      p: P
+    }
+    let advance = fn (held: Holder) {
+      held.p = held.p + P(1.0)
+    }
+    let h = Holder()
+    h.p = given ?? P(start)
+    advance(h)
+    [h.p, P(0.0)]
+  }
+  let [a, first_class] = make(1.0, nil)
+  let [b, second_class] = make(5.0, a)
+  assert_eq(a.x, 2.0)
+  assert_eq(b.x, 3.0)
+  assert_true(class_of(b) == class_of(a))
+  assert_true(class_of(a) == class_of(first_class))
+  assert_false(class_of(b) == class_of(second_class))
+}
+
+test_writes_and_reads()
+test_what_a_write_stores()
+test_other_values_run_as_written()
+test_a_statement_that_runs_code_reads_as_written()
+test_a_local_declaration_across_calls()

@@ -275,7 +275,10 @@
 # spliced method's argument; 0.03 s under --vm, 0.4 s under --jit).
 # 385 since test_value_steps.cul (a `@value` run stays one through the shapes
 # a physics step is written in; 0.03 s under --vm, 0.3 s under --jit).
-tests.cul 385
+# 386 since test_value_field_runs.cul (a statement over a field's `@value`
+# instance reads and stores it as a run, and anything else the field holds
+# runs the statement as written; 0.01 s under --vm, 0.9 s under --jit).
+tests.cul 386
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

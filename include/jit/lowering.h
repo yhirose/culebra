@@ -1028,6 +1028,8 @@ struct Lowering {
         case Op::ObjGet:
         case Op::ObjPlain:
         case Op::TypeMatch:
+        case Op::DeclMatch:
+        case Op::PropPeek:
           mark(in.b);
           mark(static_cast<int32_t>(i) + 1);
           break;
@@ -1990,6 +1992,19 @@ struct Lowering {
                   in.d ? rt::ctor_matches : rt::type_matches, b.getInt1Ty(),
                   b.getInt8Ty(), i64Ty, ptrTy),
               {j.extract_tag(v), j.extract_data(v), expected}, "vm.tm");
+          b.CreateCondBr(ok, blocks.at(static_cast<int32_t>(i) + 1),
+                         blocks.at(in.b));
+          break;
+        }
+        case Op::DeclMatch: {
+          auto v = load_slot(in.a);
+          auto ok = j.emit_call(
+              j.module_->getOrInsertFunction(rt::is_of_decl, b.getInt1Ty(),
+                                             b.getInt8Ty(), i64Ty, ptrTy,
+                                             i64Ty),
+              {j.extract_tag(v), j.extract_data(v), j.class_decl_slot(in.c),
+               b.getInt64(in.d)},
+              "vm.decl.match");
           b.CreateCondBr(ok, blocks.at(static_cast<int32_t>(i) + 1),
                          blocks.at(in.b));
           break;
@@ -4283,22 +4298,7 @@ struct Lowering {
           auto keyPtr = j.get_or_create_global_str(nm, ".vm.propname");
           auto i8Ty = b.getInt8Ty();
 
-          // Per-callsite transitioning-write IC (JitPropSetIC): the same
-          // "a plain `self.x = value` at this exact site always sees the
-          // same starting shape" observation fix 4 already exploited for
-          // property reads, applied to writes. The entry starts at kIcCold,
-          // which matches no shape — a freshly-allocated instance's null
-          // included (JitPropIC's own convention).
-          auto icTy = llvm::StructType::get(j.ctx_, {i64Ty, ptrTy});
-          static_assert(offsetof(JitPropSetIC, result) == 8 &&
-                        sizeof(JitPropSetIC) == 16);
-          auto* icInit = llvm::ConstantStruct::get(
-              icTy, {llvm::ConstantInt::get(i64Ty, kIcCold),
-                     llvm::ConstantPointerNull::get(ptrTy)});
-          auto* icGlobal = new llvm::GlobalVariable(
-              *j.module_, icTy, /*isConstant=*/false,
-              llvm::GlobalValue::PrivateLinkage, icInit,
-              ".prop.set.ic." + std::to_string(j.prop_set_ic_counter_++));
+          auto [icTy, icGlobal] = j.emit_prop_set_ic_global();
 
           // The helpers act on probe.entry, the word the guard approved,
           // never on a re-read another isolate may have changed since.
@@ -4880,11 +4880,12 @@ struct Lowering {
           auto meta = j.emit_call(
               j.module_->getOrInsertFunction(rt::build_class_meta, ptrTy,
                                              ptrTy, ptrTy, ptrTy, i64Ty,
-                                             i64Ty),
+                                             i64Ty, ptrTy),
               {j.get_or_create_global_str(c.name_table_class[in.d],
                                           ".vm.cname"),
                namesPtr, slab, b.getInt64(in.c),
-               b.getInt64(c.name_table_flags[in.d])},
+               b.getInt64(c.name_table_flags[in.d]),
+               j.class_decl_slot(c.name_table_decl[in.d])},
               "vm.class.meta");
           b.CreateStore(j.make_object(meta), slots[in.a]);
           break;
@@ -5000,6 +5001,78 @@ struct Lowering {
                b.CreateIntToPtr(j.extract_data(clsV), ptrTy), fieldsPtr},
               "vm.value.box");
           b.CreateStore(inst, slots[in.a]);
+          break;
+        }
+        case Op::PropPeek: {
+          // emit_property_value's own-slot arm, with every other answer a
+          // jump to `b` instead of a read: the cache's slot, or the helper's
+          // full own-slot lookup (which primes the cache). The helper alone
+          // primes this site's cache, and never from a dictionary or a
+          // handle, so a shape the cache holds is an ordinary object's.
+          auto recv = load_slot(in.d);
+          auto missBB = blocks.at(in.b);
+          auto objBB = BasicBlock::Create(j.ctx_, "peek.obj", fn);
+          auto fastBB = BasicBlock::Create(j.ctx_, "peek.fast", fn);
+          auto slowBB = BasicBlock::Create(j.ctx_, "peek.slow", fn);
+          auto hitBB = BasicBlock::Create(j.ctx_, "peek.hit", fn);
+          b.CreateCondBr(
+              b.CreateICmpEQ(j.extract_tag(recv), b.getInt8(TAG_OBJECT)),
+              objBB, missBB);
+          b.SetInsertPoint(objBB);
+          auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+          auto [icTy, icGlobal] = j.emit_prop_ic_global();
+          auto probe = j.emit_ic_probe(objPtr, icTy, icGlobal);
+          b.CreateCondBr(probe.match, fastBB, slowBB);
+          b.SetInsertPoint(fastBB);
+          auto fastPtr = j.emit_object_entry_ptr(
+              objPtr, j.emit_ic_slot(probe.entry, "ic.off"));
+          b.CreateBr(hitBB);
+          b.SetInsertPoint(slowBB);
+          auto slowPtr = j.emit_call(
+              j.module_->getOrInsertFunction(rt::prop_peek, ptrTy, ptrTy,
+                                             ptrTy, ptrTy),
+              {objPtr,
+               j.get_or_create_global_str(c.prop_sites[in.c].key,
+                                          ".vm.propname"),
+               icGlobal},
+              "peek.slow");
+          auto slowEnd = b.GetInsertBlock();
+          b.CreateCondBr(b.CreateIsNull(slowPtr), missBB, hitBB);
+          b.SetInsertPoint(hitBB);
+          auto at = b.CreatePHI(ptrTy, 2, "peek.at");
+          at->addIncoming(fastPtr, fastBB);
+          at->addIncoming(slowPtr, slowEnd);
+          auto v = j.emit_load_elem(at);
+          j.emit_value_retain(v);
+          b.CreateStore(v, slots[in.a]);
+          b.CreateBr(blocks.at(static_cast<int32_t>(i) + 1));
+          break;
+        }
+        case Op::ValueUnbox: {
+          auto objPtr =
+              b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          for (int32_t k = 0; k < in.c; ++k)
+            b.CreateStore(j.emit_load_elem(j.emit_object_entry_ptr(
+                              objPtr, b.getInt64(k))),
+                          slots[in.a + k]);
+          break;
+        }
+        case Op::ValueStore: {
+          const auto& vs = c.value_store_specs[in.d];
+          auto stored = j.emit_value_call(
+              j.module_->getOrInsertFunction(
+                  rt::value_store, j.valueType_, ptrTy, ptrTy, ptrTy, ptrTy,
+                  ptrTy, i64Ty, i64Ty, i64Ty, i64Ty),
+              {b.CreateIntToPtr(j.extract_data(load_slot(vs.recv)), ptrTy),
+               j.get_or_create_global_str(c.prop_sites[in.c].key,
+                                          ".vm.propname"),
+               j.emit_prop_set_ic_global().second,
+               b.CreateIntToPtr(j.extract_data(load_slot(vs.box)), ptrTy),
+               emit_arg_slab(in.b, vs.n), j.current_line_val(),
+               j.current_column_val(), b.getInt64(vs.dot >> 32),
+               b.getInt64(vs.dot & 0xffffffff)},
+              "vm.value.store");
+          b.CreateStore(stored, slots[in.a]);
           break;
         }
         case Op::FieldsInit: {

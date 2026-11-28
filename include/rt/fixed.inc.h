@@ -1194,6 +1194,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
   if (key_kind & 2) _jit_owned_bind_drop(obj);
 }
 
+// The slot a write cache's `entry`, which guards on `obj`'s shape, overwrites
+// as a plain write does — a mutable one it updates, not one it adds — or
+// null.
+inline JitObjectEntry* _jit_updated_slot(JitObject* obj, uint64_t entry) {
+  if (entry & kIcTransition) return nullptr;
+  auto& e = obj->slots[_ic_slot(entry)];
+  return e.mut ? &e : nullptr;
+}
+
 // object_set_fast's update alone, for a site owing neither contract check:
 // true after the store (its +1 absorbed), false and nothing touched for a
 // transition, a value the slot's type does not surely admit, or an immutable
@@ -1202,16 +1211,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
 // the end of slots. Never throws.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_set_update(
     JitObject* obj, uint64_t entry, int8_t tag, int64_t data) {
-  if (entry & kIcTransition) return false;
+  auto* e = _jit_updated_slot(obj, entry);
+  if (!e) return false;
   auto slot = _ic_slot(entry);
   auto t = obj->shape->type_at(slot);
   if (t != culebra::FieldType::Any &&
       !_jit_value_surely_fits_field(tag, data, t,
                                     obj->shape->annotation_at(slot)))
     return false;
-  auto& e = obj->slots[slot];
-  if (!e.mut) return false;
-  _jit_replace_value(e.value, tag, data);
+  _jit_replace_value(e->value, tag, data);
   return true;
 }
 
@@ -1556,13 +1564,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   // shared meta behind `proto`).
   if (auto* hit = _ic_proto_hit(obj, *ic)) return *hit;
   const auto name = JitKeyName::source(key);
-  if (obj->shape) {
-    auto idx = obj->find_slot(name);
-    if (idx != static_cast<size_t>(-1)) {
-      ic->prime_own(obj->shape, idx);
-      return obj->slots[idx].value;
-    }
-  }
+  if (auto* own = _ic_own_lookup(obj, name, *ic)) return *own;
   if (obj->proto()) {
     // The proto's own slot — _find_property's own first step, so the
     // resolution order is unchanged; only this hit is cacheable, and a name
@@ -1882,18 +1884,53 @@ inline int64_t _jit_class_meta_flags(const JitObject* meta) {
          (meta->is_value ? kClassMetaValue : 0);
 }
 
+// The id of the class declaration whose id slot is `slot`: a counter's next
+// value the first time the slot is asked, so no two declarations a process
+// compiles share one, ever. Each compiled program keeps a slot per declaration
+// (the executor's VmProgram::class_decls, a lowered module's
+// `__vm_class_decl.<k>`), so a declaration compiled again, in another program
+// or REPL input, gets an id of its own. Isolates running one program share
+// its slots, hence the exchange.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE uint64_t
+culebra_runtime_class_decl_id(uint64_t* slot) {
+  std::atomic_ref<uint64_t> id(*slot);
+  if (uint64_t seen = id.load(std::memory_order_acquire)) return seen;
+  static std::atomic<uint64_t> next{1};
+  uint64_t mine = next.fetch_add(1, std::memory_order_relaxed);
+  uint64_t expected = 0;
+  return id.compare_exchange_strong(expected, mine, std::memory_order_acq_rel)
+             ? mine
+             : expected;
+}
+
+// Whether a value is an instance of a class the declaration whose id slot is
+// `slot` built (JitSpecialTable::class_decl), holding its `n` fields:
+// Op::DeclMatch, ahead of the read of them by index. A slot still 0 has
+// built no meta, and so no instance.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_is_of_decl(
+    int8_t tag, int64_t data, uint64_t* slot, int64_t n) {
+  if (tag != TAG_OBJECT) return false;
+  auto* obj = reinterpret_cast<JitObject*>(data);
+  uint64_t id =
+      std::atomic_ref<uint64_t>(*slot).load(std::memory_order_acquire);
+  auto* specials = _jit_meta_specials(obj);
+  return id != 0 && specials && specials->class_decl == id &&
+         obj->slots.size() == static_cast<size_t>(n);
+}
+
 // What makes an Object holding a class's methods its meta, once they are in
 // place. A declaration (culebra_runtime_build_class_meta) and a meta rebuilt
 // from a message or a Shared tree (conc/sendable.h) both end here, so a
 // rebuilt meta is one its declaration could have made.
 inline void _jit_seal_class_meta(JitObject* meta, std::string_view name,
                                  std::string_view enum_name, int64_t flags,
-                                 int8_t dir_kind) {
+                                 int8_t dir_kind, uint64_t class_decl) {
   meta->is_lowered_state = (flags & kClassMetaLoweredState) != 0;
   meta->names_class = (flags & kClassMetaNamesClass) != 0;
   meta->is_value = (flags & kClassMetaValue) != 0;
   _jit_name_class_meta(meta, name, enum_name);
   meta->specials->dir_kind = dir_kind;
+  meta->specials->class_decl = class_decl;
   // The method set is fixed from here on, so the questions every
   // construction and every operator ask of it are answered once.
   _jit_fill_specials(meta);
@@ -1915,9 +1952,11 @@ inline void _jit_seal_class_meta(JitObject* meta, std::string_view name,
 // state machine), so a value read of one of its instances' own slots stays
 // unbound — see culebra_runtime_bind_method_value and the interp setting
 // OrderedSymbolMap::lowered_state on the same object.
+// `decl_slot` is the declaration's id slot (culebra_runtime_class_decl_id).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
     const char* class_name, const char* const* method_names,
-    const JitValue* method_vals, int64_t n_methods, int64_t flags) {
+    const JitValue* method_vals, int64_t n_methods, int64_t flags,
+    uint64_t* decl_slot) {
   auto* meta = culebra_runtime_object_new();
   int64_t i = 0;
   try {
@@ -1941,7 +1980,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
   // owned-stack registration) that `culebra_runtime_object_set` applied
   // when binding the "drop" method.
   _jit_owned_unbind_drop(meta);
-  _jit_seal_class_meta(meta, class_name, {}, flags, /*dir_kind=*/0);
+  _jit_seal_class_meta(meta, class_name, {}, flags, /*dir_kind=*/0,
+                       culebra_runtime_class_decl_id(decl_slot));
   return meta;
 }
 
@@ -2074,6 +2114,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
+// The reboxing itself: a fresh, frozen instance of the class whose meta is
+// `meta` (built by `cls`, or by none), laid out as `shape`, its `n` fields
+// `values`, +1.
+inline JitObject* _jit_value_instance(JitObject* meta, JitObject* cls,
+                                      culebra::Shape* shape, size_t n,
+                                      const JitValue* values) {
+  auto* inst = _jit_class_instance_alloc(meta, cls);
+  inst->shape = shape;
+  inst->slots.reserve(n);
+  for (size_t i = 0; i < n; i++)
+    inst->slots.push_back(JitObjectEntry{values[i], /*mut=*/false});
+  inst->fields_closed = true;
+  inst->frozen = true;
+  return inst;
+}
+
 // A run's fields — already-computed scalars, none of them refcounted (a
 // flat `@value` layout admits only Long/Float/Bool, `is_flat_value_field_type`
 // in parser.h) — materialized into a fresh, frozen instance. No `new`, no
@@ -2100,16 +2156,65 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
     void** shape_cache, const char* const* keys, int64_t n_keys,
     JitObject* cls, const JitValue* field_values) {
-  auto* shape = _jit_resolve_cached_shape(shape_cache, keys, n_keys);
   assert(cls->class_meta_of() && "a run is reboxed by its declared class");
-  auto* inst = _jit_class_instance_alloc(cls->class_meta_of(), cls);
-  inst->shape = shape;
-  inst->slots.reserve(static_cast<size_t>(n_keys));
-  for (int64_t i = 0; i < n_keys; i++)
-    inst->slots.push_back(JitObjectEntry{field_values[i], /*mut=*/false});
-  inst->fields_closed = true;
-  inst->frozen = true;
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+  return {TAG_OBJECT,
+          reinterpret_cast<int64_t>(_jit_value_instance(
+              cls->class_meta_of(), cls,
+              _jit_resolve_cached_shape(shape_cache, keys, n_keys),
+              static_cast<size_t>(n_keys), field_values))};
+}
+
+// What `obj` keeps under `key` as an own data property, or null: the answer a
+// read of it gives without running anything — no getter, proto, trait
+// default or error (Op::PropPeek). A handle (a packed record, a buffer, a
+// Shared view) answers from elsewhere than its own slots, and a dictionary
+// through its index, so each is a miss.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue* culebra_runtime_prop_peek(
+    JitObject* obj, const char* key, JitPropIC* ic) {
+  if (obj->is_dict || _jit_is_handle(obj)) return nullptr;
+  if (auto* hit = _ic_own_hit(obj, *ic)) return hit;
+  return _ic_own_lookup(obj, JitKeyName::source(key), *ic);
+}
+
+// The write that ends a statement compiled against a field's value class
+// (Op::ValueStore): `values`, the run of the fields of `box`, into
+// `obj.<key>` as an instance of `box`'s class laid out as `box` is — `box`
+// the instance the field held when the statement began, which the statement
+// still holds. Stored as PropSet stores a value, with its checks and errors
+// at (line, col) and the member's at (dot_line, dot_col). Returns what it
+// stored, +1.
+//
+// When all PropSet would do is put a new instance of the box's class where
+// the box is, the box takes the new fields instead: the field still holds it
+// in a slot a plain write overwrites, nothing but the field and the
+// statement's register holds it, and letting it go would run no `drop`.
+// Nothing could then tell the two apart: the class, the fields, and every
+// holder's view are the same.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_value_store(
+    JitObject* obj, const char* key, JitPropSetIC* ic, JitObject* box,
+    const JitValue* values, int64_t line, int64_t col, int64_t dot_line,
+    int64_t dot_col) {
+  JitValue held{TAG_OBJECT, reinterpret_cast<int64_t>(box)};
+  const size_t n = box->slots.size();
+  uint64_t entry = _ic_load(ic->entry);
+  auto* slot =
+      _ic_matches(entry, obj->shape) ? _jit_updated_slot(obj, entry) : nullptr;
+  if (slot && slot->value.tag == held.tag && slot->value.data == held.data &&
+      box->refcount == 2 && !box->proto()->methods_drop) {
+    for (size_t i = 0; i < n; i++) box->slots[i].value = values[i];
+    culebra_runtime_value_retain(held.tag, held.data);
+    return held;
+  }
+  JitValue v{TAG_OBJECT,
+             reinterpret_cast<int64_t>(_jit_value_instance(
+                 box->proto(), box->built_by(), box->shape, n, values))};
+  JitUnwindRelease mine{v};
+  // The store consumes one reference; the caller's register keeps the other.
+  culebra_runtime_value_retain(TAG_OBJECT, v.data);
+  culebra_runtime_object_set_ic(obj, key, ic, /*mut=*/true, TAG_OBJECT, v.data,
+                                line, col, /*is_init=*/false, dot_line,
+                                dot_col);
+  return v;
 }
 
 // --- @packable records as byte streams (String.pack / String.unpack) ------

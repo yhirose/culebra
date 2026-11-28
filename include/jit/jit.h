@@ -3094,6 +3094,19 @@ struct JIT {
     return {cacheGlobal, keysArray};
   }
 
+  // Class declaration `k`'s id slot in the module (vm::VmProgram::
+  // class_decls[k]): 0 until culebra_runtime_class_decl_id gives it an id at
+  // run time, so no id a compiling process made is baked in. One per
+  // declaration, shared by its ClassMeta and every Op::DeclMatch on it.
+  llvm::GlobalVariable* class_decl_slot(int32_t k) {
+    auto name = std::format("__vm_class_decl.{}", k);
+    if (auto* g = module_->getNamedGlobal(name)) return g;
+    auto i64Ty = builder_.getInt64Ty();
+    return new llvm::GlobalVariable(*module_, i64Ty, /*isConstant=*/false,
+                                    llvm::GlobalValue::PrivateLinkage,
+                                    llvm::ConstantInt::get(i64Ty, 0), name);
+  }
+
 
   // --- Value helpers ---
 
@@ -3738,12 +3751,18 @@ struct JIT {
     module_->getOrInsertFunction(rt::object_set_update, builder_.getInt1Ty(),
                                  ptrTy, builder_.getInt64Ty(),
                                  builder_.getInt8Ty(), builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::is_of_decl, builder_.getInt1Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                 ptrTy, builder_.getInt64Ty());
+    module_->getOrInsertFunction(rt::prop_peek, ptrTy, ptrTy, ptrTy, ptrTy);
 
     // These never raise a culebra exception (object_set_update refuses by
-    // answering false), so mark them nounwind: emit_call then drops the
-    // invoke/landing-pad edge at every site.
+    // answering false, the two guard helpers by answering no), so mark them
+    // nounwind: emit_call then drops the invoke/landing-pad edge at every
+    // site.
     for (auto name : {rt::value_retain, rt::value_release, rt::cell_retain,
-                      rt::cell_release, rt::object_set_update}) {
+                      rt::cell_release, rt::object_set_update, rt::is_of_decl,
+                      rt::prop_peek}) {
       if (auto* f = module_->getFunction(name)) f->setDoesNotThrow();
     }
 
@@ -5369,6 +5388,27 @@ struct JIT {
         *module_, icTy, /*isConstant=*/false,
         llvm::GlobalValue::PrivateLinkage, icInit,
         ".prop.ic." + std::to_string(prop_ic_counter_++));
+    return {icTy, icGlobal};
+  }
+
+  // A write site's own inline cache (JitPropSetIC): the same "a plain
+  // `self.x = value` at this exact site always sees the same starting shape"
+  // observation the read cache exploits, applied to writes. The entry starts
+  // at kIcCold, which matches no shape — a freshly-allocated instance's null
+  // included (JitPropIC's own convention).
+  std::pair<llvm::StructType*, llvm::GlobalVariable*>
+  emit_prop_set_ic_global() {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto icTy = llvm::StructType::get(ctx_, {i64Ty, ptrTy});
+    static_assert(offsetof(JitPropSetIC, result) == 8 &&
+                  sizeof(JitPropSetIC) == 16);
+    auto* icInit = llvm::ConstantStruct::get(
+        icTy, {llvm::ConstantInt::get(i64Ty, kIcCold),
+               llvm::ConstantPointerNull::get(ptrTy)});
+    auto* icGlobal = new llvm::GlobalVariable(
+        *module_, icTy, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
+        icInit, ".prop.set.ic." + std::to_string(prop_set_ic_counter_++));
     return {icTy, icGlobal};
   }
 

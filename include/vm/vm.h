@@ -511,6 +511,14 @@ enum class Op : uint8_t {
                // pattern's head instead (culebra_runtime_ctor_matches): the
                // class or variant that built an Object the pattern gated
                // on, which a built-in type's name (`Long(n)`) can name too.
+  DeclMatch,   // unless regs[a] is an instance of a class the declaration
+               // VmProgram::class_decls[c] built (its meta's
+               // JitSpecialTable::class_decl), holding d fields
+               // (culebra_runtime_is_of_decl), jump to b. What code compiled
+               // against one declaration asks before it treats a value as
+               // that declaration's instance; a different class of the same
+               // name, nil, or one a second compile of the declaration
+               // built all jump. Never throws, so it carries no position.
   ClassObj,    // regs[a] = fresh Object (+1) marked `is_class`, so `C(args)`
                // finds its `new`, holding the instance meta regs[b] (absorbs
                // its +1; regs[b] = nil) — object_new + mark_class
@@ -542,6 +550,23 @@ enum class Op : uint8_t {
                // ordinary call's argument, a container-literal element, a
                // container store) but could still keep unboxed everywhere
                // else — spec §15.8 "reboxing at boundaries".
+  PropPeek,    // regs[a] = what regs[d] keeps as its own data property
+               // prop_sites[c] (+1), or jump to b with regs[a] untouched: a
+               // read that runs nothing — no getter, proto, trait default or
+               // error (culebra_runtime_prop_peek). How a statement compiled
+               // against a field's value class reads the field before it
+               // settles which of its two versions runs (§5.3.6).
+  ValueUnbox,  // regs[a .. a+c) = the c fields of the instance regs[b], its
+               // slots in declaration order: the flat layout of the
+               // declaration a DeclMatch just vouched for. Each is a scalar,
+               // so no refcount moves.
+  ValueStore,  // regs[a] = what the field holds after the store (+1): the run
+               // regs[b .. b+s.n) written to regs[s.recv].prop_sites[c] as an
+               // instance of the class of regs[s.box], the field's instance
+               // the statement began with, laid out as it is,
+               // s = value_store_specs[d] — culebra_runtime_value_store.
+               // PropSet's checks and errors, at this instruction's position
+               // (the member's at s.dot).
   FieldsInit,  // the declared, initializer-less fields of regs[a]'s class
                // (chunk.field_layout_specs[b]) appended in one step, each
                // holding its type's zero — the run of `self.x = zero` stores
@@ -2668,6 +2693,17 @@ struct Chunk {
     std::vector<const char*> keys;
   };
   std::vector<ValueBoxSpec> value_box_specs;
+  // One entry per Op::ValueStore site: the receiver's register, the one
+  // holding the field's instance the statement began with (whose class and
+  // layout the stored one has), the run's length, and the member's
+  // position, packed (culebra::unpack_pos).
+  struct ValueStoreSpec {
+    int32_t recv;
+    int32_t box;
+    int32_t n;
+    int64_t dot;
+  };
+  std::vector<ValueStoreSpec> value_store_specs;
   // One entry per Op::FieldsInit site (emit_declared_field_layout): the
   // declared field names in declaration order, each one's zero value
   // (a scalar, or the borrowed `''` literal out of `consts`), and the Shape
@@ -2864,6 +2900,9 @@ struct Chunk {
   // interns onto the meta. ClassMeta's four operands are already spoken for
   // (dest, run, count, table), so it rides the table index like the flags.
   std::vector<std::string> name_table_class;
+  // Parallel to name_tables: the declaration's index in
+  // VmProgram::class_decls, whose id build_class_meta stamps on the meta.
+  std::vector<int32_t> name_table_decl;
   // Capture list: for each free var, the slot (in the CREATING frame's
   // numbering) holding its cell pointer. A fn literal has exactly one
   // creation site — its MakeClosure — so the list lives with the callee
@@ -3317,6 +3356,12 @@ struct VmProgram {
   };
   std::map<int64_t, std::vector<ConstSiteRef>> const_sites_by_cell;
   int64_t next_known_cell = 0;
+  // One id slot per class declaration this program compiled
+  // (Compiler::class_decl_index), 0 until the first meta the declaration
+  // builds asks it for an id (culebra_runtime_class_decl_id): the
+  // executor's, written through a const program as the inline caches are.
+  // A lowered module keeps the same slots as its own globals.
+  mutable std::vector<uint64_t> class_decls;
 };
 
 // Build the keyword-resolver's view of every chunk. Called once, before the
@@ -3656,7 +3701,8 @@ inline bool pos_index_agrees(const VmProgram& p) {
 inline bool op_names_prop_site(Op op) {
   switch (op) {
     case Op::PropVal: case Op::PropRaw: case Op::PropSet: case Op::PropWr:
-    case Op::PropCo: case Op::MethGate:
+    case Op::PropCo: case Op::MethGate: case Op::PropPeek:
+    case Op::ValueStore:
       return true;
     default:
       return false;
@@ -3868,7 +3914,9 @@ inline Succ rc_successors(const Insn& in) {
     case Op::ObjGet:
     case Op::ObjPlain:
     case Op::TypeMatch:
+    case Op::DeclMatch:
     case Op::ForNext:
+    case Op::PropPeek:
     case Op::ForLoop: return {in.b, true};
     case Op::ForPrep: return {in.b, false};
     default: return {-1, true};
@@ -3920,6 +3968,10 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
     case Op::CaughtPos:
     case Op::DeferMark:
     case Op::Release: set(in.a, false); break;
+    // A flat layout's fields are Long, Float or Bool.
+    case Op::ValueUnbox:
+      for (int32_t k = 0; k < in.c; ++k) set(in.a + k, false);
+      break;
     // Reads, checks, control flow, and side effects on state that is not a
     // register — OwnedMark/OwnedExit write the mark array, not `regs`.
     case Op::Jump:
@@ -3930,6 +3982,7 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
     case Op::JumpIfSame:
     case Op::JumpIfTag:
     case Op::JumpIfFilled:
+    case Op::DeclMatch:
     case Op::Safepoint:
     case Op::OwnedMark:
     case Op::OwnedExit:
@@ -4037,7 +4090,10 @@ inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
     case Op::JumpIfNotNil:
     case Op::JumpIfNil:
     case Op::JumpIfTag:
-    case Op::JumpIfFilled: read(in.a); break;
+    case Op::JumpIfFilled:
+    case Op::DeclMatch: read(in.a); break;
+    case Op::PropPeek: read(in.d); break;
+    case Op::ValueUnbox: read(in.b); break;
     case Op::Eq:
     case Op::Ne:
     case Op::Lt:
@@ -5819,9 +5875,10 @@ class Compiler {
     if (b.known.cell < 0) b.known.cell = prog_.next_known_cell++;
   }
 
-  // A declaration just compiled whose every read is a number
-  // (FnAnalysis::number_declarations): `name`, declared once in `form`, by
-  // a number. What lets `k * v` dispatch to `v`'s reflected method unasked.
+  // A parameter just compiled whose every read is a number
+  // (FnAnalysis::number_declarations): `name`, declared once in `form`,
+  // annotated as one. What lets `k * v` dispatch to `v`'s reflected method
+  // unasked. A `let`'s answer is number_let's.
   void grant_number(const peg::Ast& name, culebra::resolve::Form form,
                     bool number) {
     if (number && analysis_.declared_once_as(name, form))
@@ -5838,7 +5895,8 @@ class Compiler {
   }
 
   // Whether `e` evaluates to a Long or a Float whenever it evaluates at all:
-  // a numeric literal, a name that holds one (Binding::number), or an
+  // a numeric literal, a name that holds one (a parameter annotated as one,
+  // a `let` of one: number_let), or an
   // arithmetic operator over such, which no class can answer for (it may
   // throw instead: `1 / 0`).
   bool static_number(const peg::Ast& e) {
@@ -5848,8 +5906,11 @@ class Compiler {
     // holds now: a round asks before the statements it decides compile, and
     // a name redeclared among them (`let k = Obj()` in a loop body) is
     // another declaration, not yet known to be a number.
-    if (e.tag == "IDENTIFIER"_)
-      return analysis_.number_declarations.contains(analysis_.declaration_of(e));
+    if (e.tag == "IDENTIFIER"_) {
+      const peg::Ast* decl = analysis_.declaration_of(e);
+      return decl && (analysis_.number_declarations.contains(decl) ||
+                      number_let(*decl));
+    }
     if (e.tag == "UNARY_MINUS"_) return e.nodes.size() >= 2 && static_number(*e.nodes[1]);
     if ((e.tag != "ADDITIVE"_ && e.tag != "MULTIPLICATIVE"_) || e.nodes.size() < 3)
       return false;
@@ -5858,6 +5919,27 @@ class Compiler {
                      : splice_dunder_for_token(e.nodes[i]->token).empty())
         return false;
     return true;
+  }
+
+  // Whether the `let` declared at `decl` holds a number: declared once, by a
+  // number. Answered from the declaration, so a round deciding before its
+  // statement compiles (precheck_value_bindings_at) and the compile after
+  // agree.
+  bool number_let(const peg::Ast& decl) {
+    using namespace peg::udl;
+    auto& known = analysis_.number_lets;
+    if (auto it = known.find(&decl); it != known.end()) return it->second;
+    known[&decl] = false;  // what a `let` reached again while asked says
+    auto parent = decl.parent.lock();
+    if (!parent || parent->tag != "ASSIGNMENT"_) return false;
+    auto av = culebra::view_assignment(*parent);
+    bool number = av.is_let && !av.is_mut && !av.compound && av.rhs &&
+                  culebra::assign_name_target(*parent, av) == &decl &&
+                  analysis_.declared_once_as(decl,
+                                             culebra::resolve::Form::Let) &&
+                  static_number(*av.rhs);
+    known[&decl] = number;
+    return number;
   }
 
   // The scalar an expression spells when it is a literal — a NUMBER, FLOAT
@@ -6375,23 +6457,33 @@ class Compiler {
         if (b->name == name) return &*b;
     }
     if (in && !in->own_name.empty() && name == in->own_name)
-      return value_class_binding(*in->class_ast);
+      return field_runs_ ? declaring_binding(*in->class_ast)
+                         : value_class_binding(*in->class_ast);
     return nullptr;
   }
 
   // The binding a flat `@value` class's declaration gave the class to
   // (Known::value_class), whatever a scope in between declares under its
-  // name. Null for a stdlib module's class, which no binding carries: its
-  // name is then the unshadowed namespace's. Any other class reached here
-  // was reached through that binding, in a scope still open.
-  Binding* value_class_binding(const peg::Ast& cls) {
+  // name, or null where none is open: a stdlib module's class, which no
+  // binding carries, and a class whose run a field's value unboxed
+  // (field_runs_), which nothing at the statement need name.
+  Binding* declaring_binding(const peg::Ast& cls) {
     for (auto sc = scopes_.rbegin(); sc != scopes_.rend(); ++sc)
       for (auto b = sc->bindings.rbegin(); b != sc->bindings.rend(); ++b)
         if (b->known.value_class == &cls) return &*b;
-    assert(std::ranges::any_of(analysis_.stdlib_value_classes,
-                               [&](const auto& e) { return e.second == &cls; }) &&
-           "a program's class being spliced has its declaring binding in scope");
     return nullptr;
+  }
+  // The same for a run being reboxed by its class object, which a run a
+  // construction made always has within reach: only a stdlib module's class
+  // answers null, its name then the unshadowed namespace's.
+  Binding* value_class_binding(const peg::Ast& cls) {
+    Binding* b = declaring_binding(cls);
+    assert((b || std::ranges::any_of(analysis_.stdlib_value_classes,
+                                     [&](const auto& e) {
+                                       return e.second == &cls;
+                                     })) &&
+           "a construction's run has its class's declaring binding in scope");
+    return b;
   }
 
   // Emit Releases for (and forget) the temps allocated after `base` — the
@@ -8598,6 +8690,7 @@ class Compiler {
           names_class = true;
       }
       chunk_.name_table_class.push_back(class_name);
+      chunk_.name_table_decl.push_back(class_decl_index(ast));
       chunk_.name_table_flags.push_back(static_cast<uint8_t>(
           (culebra::is_lowered_state_class(ast)
                ? kClassMetaLoweredState
@@ -9926,7 +10019,7 @@ class Compiler {
       // binding simply adopts them as its slot; nothing to copy.
       if (auto it = value_unboxed_.find(&ast); it != value_unboxed_.end()) {
         const auto& cand = it->second;
-        auto rhs = compile_unboxed_value_expr(*av.rhs);
+        auto rhs = compile_run_versions(*av.rhs);
         assert(rhs.unboxed == cand.layout && rhs.unboxed_class == cand.cls &&
               "precheck_value_bindings_at promised this RHS resolves to v's class");
         Binding b{name, rhs.slot, decl_mut, /*is_cell=*/false};
@@ -9937,15 +10030,13 @@ class Compiler {
       }
       bool cell = info_->captured_locals.contains(name);
       int32_t slot = cell ? alloc_cell_slot(*tgt, name) : alloc_slot(*tgt, name);
-      auto rhs = compile_assign_rhs(ast, av);
+      auto rhs = compile_rhs_versions(ast, av);
       if (cell) {
         store_new_cell(*tgt, slot, rhs);
       } else {
         store_into(slot, rhs, /*dst_is_fresh=*/true);
       }
       push_binding(*tgt, {name, slot, decl_mut, cell});
-      if (av.is_let && !av.is_mut)
-        grant_number(*tgt, culebra::resolve::Form::Let, static_number(*av.rhs));
       grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
       grant_known_const(scopes_.back().bindings.back(), *av.rhs);
       grant_declared_class(scopes_.back().bindings.back(), *av.rhs,
@@ -9967,7 +10058,7 @@ class Compiler {
     // apply to a binding this mechanism marks (precheck_value_bindings_at only
     // marks a plain, non-predeclared, non-captured, non-REPL declaration).
     if (b && b->unboxed_layout) {
-      return store_unboxed_home(*b, compile_unboxed_value_expr(*av.rhs));
+      return compile_run_versions(*av.rhs, b);
     }
     // `self` is a binding of every frame, and a stdlib global an immutable
     // root-env one, so a write to either is a reassignment even where nothing
@@ -9979,7 +10070,7 @@ class Compiler {
       int32_t t = alloc_temp(*tgt);
       return {t, true};  // unreachable
     }
-    auto r = compile_assign_rhs(ast, av);
+    auto r = compile_rhs_versions(ast, av);
     {
       // Runtime ImmutableError, after the RHS ran — matching the interp/JIT
       // order and keeping a never-executed assignment silent. The RHS temp
@@ -10190,54 +10281,62 @@ class Compiler {
       }
       if (av.compound) {
         Op op = compound_op(ast, av.op_base);
+        auto compound = [&]() -> ExprResult {
+          auto rhs = compile_assign_rhs(ast, av);
+          auto recv = chain_prefix();
+          // `self.x op= v` inside an inlined constructor: the step reads and
+          // writes the run's own slot, through the store's field check.
+          if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
+            int32_t t = alloc_temp(ast);
+            emit(op, t, recv.slot + ix, rhs.slot, /*inplace=*/1);
+            store_inline_field(ast, recv, ix, {t, /*owned=*/true});
+            return {recv.slot + ix, /*owned=*/false};
+          }
+          int32_t cur = alloc_temp(ast);
+          // `<name>.<field>` reads what compile_property_read's first postfix
+          // would: the declared class's promise about the field's tag.
+          int32_t tag =
+              end == av.lvaloff + 1
+                  ? declared_read_tag(*ast.nodes[av.lvaloff], fin.token)
+                  : 0;
+          emit(Op::PropWr, cur, recv.slot, prop_site(fin.token),
+               Chunk::encode_prop_wr({dotpos, static_cast<int8_t>(tag)}));
+          int32_t t = alloc_temp(ast);
+          emit(op, t, cur, rhs.slot, /*inplace=*/1);
+          // No namespace check on the write-back: a namespace's unknown
+          // member already fell out of PropWr, and a known one overwrites
+          // into its own (immutable) slot — the interp's order. A Tensor step
+          // that mutated the receiver in place writes nothing back at all, so
+          // an immutable slot does not refuse it (the plain-variable arm above
+          // makes the same test).
+          size_t in_place = emit(Op::JumpIfSame, cur, 0, t);
+          emit_prop_set(fin, recv.slot, t, /*ns_check=*/false);
+          patch_to_here(in_place);
+          return {t, true};
+        };
+        return compile_field_write(ast, av, compound);
+      }
+      auto plain = [&]() -> ExprResult {
         auto rhs = compile_assign_rhs(ast, av);
         auto recv = chain_prefix();
-        // `self.x op= v` inside an inlined constructor: the step reads and
-        // writes the run's own slot, through the store's field check.
+        // `self.x = v` inside an inlined constructor: the field is a slot of
+        // the run being built, so the store is a move into it. No object
+        // exists to PropSet, and none needs to — this is the write that puts
+        // the value where an unboxed instance keeps it. Only a declared field
+        // can appear here: the contract check at the class declaration already
+        // refused any other name (value_undeclared_self_write_message).
         if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
-          int32_t t = alloc_temp(ast);
-          emit(op, t, recv.slot + ix, rhs.slot, /*inplace=*/1);
-          store_inline_field(ast, recv, ix, {t, /*owned=*/true});
-          return {recv.slot + ix, /*owned=*/false};
+          assert(recv.unboxed == value_class_of(*recv.unboxed_class)->layout &&
+                 "a run is laid out as its own class");
+          store_inline_field(ast, recv, ix, rhs);
+          return rhs;
         }
-        int32_t cur = alloc_temp(ast);
-        // `<name>.<field>` reads what compile_property_read's first postfix
-        // would: the declared class's promise about the field's tag.
-        int32_t tag = end == av.lvaloff + 1
-                          ? declared_read_tag(*ast.nodes[av.lvaloff], fin.token)
-                          : 0;
-        emit(Op::PropWr, cur, recv.slot, prop_site(fin.token),
-             Chunk::encode_prop_wr({dotpos, static_cast<int8_t>(tag)}));
-        int32_t t = alloc_temp(ast);
-        emit(op, t, cur, rhs.slot, /*inplace=*/1);
-        // No namespace check on the write-back: a namespace's unknown
-        // member already fell out of PropWr, and a known one overwrites
-        // into its own (immutable) slot — the interp's order. A Tensor step
-        // that mutated the receiver in place writes nothing back at all, so
-        // an immutable slot does not refuse it (the plain-variable arm above
-        // makes the same test).
-        size_t in_place = emit(Op::JumpIfSame, cur, 0, t);
-        emit_prop_set(fin, recv.slot, t, /*ns_check=*/false);
-        patch_to_here(in_place);
-        return {t, true};
-      }
-      auto rhs = compile_assign_rhs(ast, av);
-      auto recv = chain_prefix();
-      // `self.x = v` inside an inlined constructor: the field is a slot of
-      // the run being built, so the store is a move into it. No object
-      // exists to PropSet, and none needs to — this is the write that puts
-      // the value where an unboxed instance keeps it. Only a declared field
-      // can appear here: the contract check at the class declaration already
-      // refused any other name (value_undeclared_self_write_message).
-      if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
-        assert(recv.unboxed == value_class_of(*recv.unboxed_class)->layout &&
-               "a run is laid out as its own class");
-        store_inline_field(ast, recv, ix, rhs);
+        emit_prop_set(
+            fin, recv.slot, rhs.slot,
+            /*ns_check=*/!write_recv_is_instance(ast, av.lvaloff, end));
         return rhs;
-      }
-      emit_prop_set(fin, recv.slot, rhs.slot,
-                    /*ns_check=*/!write_recv_is_instance(ast, av.lvaloff, end));
-      return rhs;
+      };
+      return compile_field_write(ast, av, plain);
     }
     if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
 
@@ -11857,6 +11956,12 @@ class Compiler {
     if (node.tag == "ASSIGNMENT"_) {
       auto av = culebra::view_assignment(node);
       const auto* target = culebra::assign_name_target(node, av);
+      // A statement compiled in two versions over field runs (§5.3.6) takes
+      // `name` wherever its right-hand side reads it, if not declared or
+      // written there.
+      if ((!target || target->token != w.name) &&
+          versioned_rhs_takes(node, av, w.name))
+        return true;
       if (target && target->token == w.name) {
         // A redeclaration shadows rather than writes — spec §15.5's rule
         // is that a shadow of the name anywhere in the walked region
@@ -11927,6 +12032,44 @@ class Compiler {
     if (name_run_class(expr.token, w) != w.cls) return false;
     materialize_at_.insert(&expr);
     return true;
+  }
+
+  // Whether the assignment `node`, whose right-hand side reads `name`, a
+  // candidate here, compiles in two versions over field runs under the
+  // round's assumptions (§5.3.6). If so the first version, pure, consumes
+  // every run it reads, and each read of `name` is marked to be reboxed
+  // where the version as written meets it in compile_expr
+  // (materialize_at_). compile_assignment asks the same question once the
+  // round has decided; were the answers to differ, the marks still leave the
+  // run unescaped.
+  bool versioned_rhs_takes(const peg::Ast& node,
+                           const culebra::AssignmentView& av,
+                           std::string_view name) {
+    if (!av.rhs) return false;
+    std::vector<const peg::Ast*> reads;
+    walk_identifiers(*av.rhs, [&](const peg::Ast& id) {
+      if (id.token == name) reads.push_back(&id);
+    });
+    if (reads.empty() || !statement_versioned(node, av)) return false;
+    materialize_at_.insert(reads.begin(), reads.end());
+    return true;
+  }
+  // Whether compile_assignment compiles the assignment `node` in two
+  // versions (rhs_plan, field_write_plan), asked once per statement while a
+  // round's assumptions stand (round_versioned_).
+  bool statement_versioned(const peg::Ast& node,
+                           const culebra::AssignmentView& av) {
+    if (round_versioned_)
+      if (auto it = round_versioned_->find(&node);
+          it != round_versioned_->end())
+        return it->second;
+    bool versioned =
+        culebra::assign_name_target(node, av)
+            ? !av.compound &&
+                  rhs_plan(*av.rhs, unboxed_value_expr_class(*av.rhs))
+            : field_write_plan(node, av).has_value();
+    if (round_versioned_) round_versioned_->emplace(&node, versioned);
+    return versioned;
   }
 
   // The class of a chain rooted at a name OTHER than `w.name` that is a run
@@ -12080,6 +12223,17 @@ class Compiler {
     return {t, true};
   }
 
+  // The declaration's id slot in this program (VmProgram::class_decls):
+  // the one its ClassMeta stamps every meta it builds with, and the one
+  // Op::DeclMatch checks a value against. Whichever asks first takes it, so
+  // a site may be compiled before the declaration it assumes.
+  int32_t class_decl_index(const peg::Ast& cls) {
+    auto [it, fresh] = analysis_.class_decls.try_emplace(
+        &cls, static_cast<int32_t>(prog_.class_decls.size()));
+    if (fresh) prog_.class_decls.push_back(0);
+    return it->second;
+  }
+
   // An expression proven to be a run, compiled as whichever of the three
   // top-level shapes it is (fold / negation / chain). Its callers ask the
   // same question about different expressions: a write's RHS (whose
@@ -12157,16 +12311,22 @@ class Compiler {
   ExprResult splice_member_arg(const peg::Ast& cls, const peg::Ast* m,
                                const InlineParam* p, const peg::Ast& arg) {
     if (m && p)
-      if (const peg::Ast* acls = unboxed_value_expr_class(arg))
-        if (auto ac = value_class_of(*acls);
-            ac && member_param_takes_run(cls, *m, *p, *acls, ac->name,
-                                         ac->layout))
-          return compile_unboxed_value_expr(arg);
+      if (const peg::Ast* acls = unboxed_value_expr_class(arg);
+          acls && param_takes_run(cls, *m, *p, *acls))
+        return compile_unboxed_value_expr(arg);
     auto r = compile_expr(arg);
     assert(!r.unboxed_class &&
            "a spliced parameter's argument must arrive boxed unless the run "
            "rule above let it stay one");
     return r;
+  }
+
+  // Whether a spliced member's parameter `p` takes an argument that is a run
+  // of `acls` as one (member_param_takes_run), rather than as its value.
+  bool param_takes_run(const peg::Ast& cls, const peg::Ast& m,
+                       const InlineParam& p, const peg::Ast& acls) {
+    auto ac = value_class_of(acls);
+    return ac && member_param_takes_run(cls, m, p, acls, ac->name, ac->layout);
   }
 
   // The receiver-dependent half of that question: given the dunder about to
@@ -12390,16 +12550,20 @@ class Compiler {
     // an earlier one (`let w2 = w + g`), so it is filled as the list is read.
     AssumedRuns live;
     SpliceCache splices;
+    std::unordered_map<const peg::Ast*, bool> versioned;
     struct RoundGuard {
       Compiler& c;
       const AssumedRuns* runs;
       SpliceCache* splices;
+      std::unordered_map<const peg::Ast*, bool>* versioned;
       ~RoundGuard() {
         c.assumed_runs_ = runs;
         c.round_splices_ = splices;
+        c.round_versioned_ = versioned;
       }
     } round_guard{*this, std::exchange(assumed_runs_, &live),
-                  std::exchange(round_splices_, &splices)};
+                  std::exchange(round_splices_, &splices),
+                  std::exchange(round_versioned_, &versioned)};
     // The candidates of the lists nested in this one's later statements (a
     // loop body's `let d = v * DT`) join the round too, so a run consumed
     // there is decided together with what consumes it; the nested list's
@@ -12486,6 +12650,7 @@ class Compiler {
           if (!value_ref_ok(*l[j], w)) ok = false;
         if (!ok) {
           live.erase(c.name);
+          versioned.clear();
           changed = true;
         }
       }
@@ -12852,14 +13017,21 @@ class Compiler {
     // it (guard_lazy) before it lays an instance out. A member's own name,
     // read off the receiver, is a question about WHICH class and is never
     // granted one; in a body being spliced in it is the class being
-    // spliced, whose binding the lookup found by the declaration.
+    // spliced, found by its declaration's binding where one is in scope.
     const Binding* b = lookup_at(head);
-    const peg::Ast* cls =
-        b ? b->known.value_class : stdlib_value_class(head.token);
+    // The body's own name with no binding of the class open: a body a field
+    // run reached (field_runs_), whose class is the frame's all the same.
+    const MemberFrame* in =
+        member_frames_.empty() ? nullptr : &member_frames_.back();
+    bool own = !b && in && !in->own_name.empty() && head.token == in->own_name;
+    const peg::Ast* cls = b     ? b->known.value_class
+                          : own ? in->class_ast
+                                : stdlib_value_class(head.token);
     // Which class the name means is resolve.h's answer where it is written;
     // the scope, asked from wherever this runs, only says whether it unboxes.
     auto named = analysis_.constructed_names.find(&head);
-    if (named == analysis_.constructed_names.end()) return b ? nullptr : cls;
+    if (named == analysis_.constructed_names.end())
+      return b || own ? nullptr : cls;
     return cls && class_name_node(*cls) == named->second ? cls : nullptr;
   }
 
@@ -12970,6 +13142,9 @@ class Compiler {
     // `v = v + g * DT` fold the same way a literal `C.new(...) + C.new(...)`
     // does, `v` playing operand[0]'s role (spec §15.3).
     if (ast.tag == "IDENTIFIER"_) return run_class_named(ast);
+    // A field run (`b.vel`) and a chain on one that ends holding its class.
+    if (auto fc = field_chain(ast))
+      return fc->end == ChainEnd::Run ? fc->head.unboxed_class : nullptr;
     // A chain on such a local that ends still holding its class
     // (`v.rot(w)`): the steps splice onto the local's run.
     if (ast.tag == "CALL"_ && ast.nodes.size() >= 2 &&
@@ -13008,19 +13183,25 @@ class Compiler {
   // and dunder_splices; null outside one.
   const AssumedRuns* assumed_runs_ = nullptr;
   SpliceCache* round_splices_ = nullptr;
+  // Whether each assignment the round has asked about compiles in two
+  // versions (statement_versioned), until an assumption drops.
+  std::unordered_map<const peg::Ast*, bool>* round_versioned_ = nullptr;
 
-  // A postfix chain rooted at a local already proven unboxed
-  // (Binding::unboxed_class), and how its steps end: the lookahead the Run
-  // case of try_inline_value_chain commits on. `self` is not one: a
-  // member's receiver ends a run only as its own tail, which
-  // receiver_refs_stay_unboxed governs.
+  // A postfix chain rooted at a run — a local already proven unboxed
+  // (Binding::unboxed_class), or a field run (`b.vel.x`, §5.3.6) — and how
+  // its steps, from `from` on, end: the lookahead the Run case of
+  // try_inline_value_chain commits on. `self` is not one: a member's
+  // receiver ends a run only as its own tail, which receiver_refs_stay_unboxed
+  // governs.
   struct NameChain {
     ExprResult head;
     std::string_view class_name;
     ChainEnd end;
+    size_t from = 1;
   };
   std::optional<NameChain> name_chain(const peg::Ast& ast) {
     using namespace peg::udl;
+    if (auto fc = field_chain(ast)) return fc;
     if (ast.tag != "CALL"_ || ast.nodes.size() < 2 ||
         ast.nodes[0]->tag != "IDENTIFIER"_ || ast.nodes[0]->token == "self")
       return std::nullopt;
@@ -13032,6 +13213,590 @@ class Compiler {
                              head->unboxed);
     if (end == ChainEnd::Declined) return std::nullopt;
     return NameChain{*head, vc->name, end};
+  }
+  // The chain's steps spliced onto its head.
+  ExprResult splice_name_chain(const NameChain& nc, const peg::Ast& ast) {
+    return splice_trailing_chain(nc.head, ast, nc.from, *nc.head.unboxed_class,
+                                 nc.class_name, nc.head.unboxed);
+  }
+
+  // A statement's read of a field holding a flat `@value` instance (`b.vel`,
+  // `@q`, §5.3.6): the receiver's binding and the field, and the run of the
+  // declaration the field's annotation names where the statement is
+  // (field_run_class) — its slots once the statement's guard has unboxed the
+  // field's instance, held +1 in `box`.
+  struct FieldRun {
+    const Binding* recv;
+    const peg::Ast* recv_node;  // one occurrence of the receiver's name
+    std::string_view field;
+    ExprResult run;
+    int32_t recv_slot = -1;  // the receiver, as the guard read it
+    int32_t box = -1;
+  };
+  // What the version of a statement compiling now, or asked about, reads as
+  // field runs; null everywhere else.
+  const std::vector<FieldRun>* field_runs_ = nullptr;
+  struct FieldRunsOn {
+    Compiler& c;
+    const std::vector<FieldRun>* saved;
+    FieldRunsOn(Compiler& comp, const std::vector<FieldRun>& runs)
+        : c(comp), saved(comp.field_runs_) {
+      c.field_runs_ = &runs;
+    }
+    ~FieldRunsOn() { c.field_runs_ = saved; }
+    FieldRunsOn(const FieldRunsOn&) = delete;
+    FieldRunsOn& operator=(const FieldRunsOn&) = delete;
+  };
+
+  // `name.field` heading a postfix chain, where it reads the field rather
+  // than calls it.
+  static bool field_read_head(const peg::Ast& ast) {
+    using namespace peg::udl;
+    return ast.tag == "CALL"_ && ast.nodes.size() >= 2 &&
+           ast.nodes[0]->tag == "IDENTIFIER"_ &&
+           ast.nodes[1]->original_tag == "DOT"_ &&
+           !(ast.nodes.size() > 2 &&
+             ast.nodes[2]->original_tag == "ARGUMENTS"_);
+  }
+
+  // The field run a postfix chain starts with (`b.vel`, `b.vel.x`,
+  // `b.q.spin(w)`). In a body being spliced in the receiver's name is the
+  // body's own, which binds nothing of the statement's, so nothing matches
+  // there.
+  const FieldRun* field_run_of(const peg::Ast& ast) {
+    if (!field_runs_ || !field_read_head(ast)) return nullptr;
+    const Binding* b = lookup_at(*ast.nodes[0]);
+    if (!b) return nullptr;
+    for (const auto& r : *field_runs_)
+      if (r.recv == b && r.field == ast.nodes[1]->token) return &r;
+    return nullptr;
+  }
+
+  // A postfix chain on a field run, its steps starting after the field.
+  std::optional<NameChain> field_chain(const peg::Ast& ast) {
+    const FieldRun* r = field_run_of(ast);
+    if (!r) return std::nullopt;
+    const peg::Ast& cls = *r->run.unboxed_class;
+    auto class_name = value_class_of(cls)->name;
+    ChainEnd end = chain_end(ast, 2, cls, class_name, r->run.unboxed);
+    if (end == ChainEnd::Declined) return std::nullopt;
+    return NameChain{r->run, class_name, end, 2};
+  }
+
+  // --- A statement over field runs, in two versions (§5.3.6) ---------------
+  //
+  // A field's value is a box, and every read of one is a property read
+  // compiled for whatever the field may hold. A statement whose reads of a
+  // field holding a flat `@value` instance could be the run machinery's own
+  // (`b.vel = b.vel + g * k`) is compiled twice: a guard reads each such
+  // field with no effect (PropPeek), checks that its instance is the one
+  // declaration the statement was compiled against (DeclMatch) and unboxes
+  // it (ValueUnbox); the version after the guard reads the fields as those
+  // runs, and the version a failed check jumps to is the statement as
+  // written. The field may hold nil, another class of the name, or an
+  // instance a second compile of the declaration built: the statement then
+  // runs as written.
+  //
+  // The guard reads every field before the statement starts, where the
+  // statement itself reads each one at its turn. The two agree only while
+  // nothing between could write the field, so the first version is taken
+  // only for a statement that runs none of the program's code at all: the
+  // run machinery's splices and arithmetic on numbers (pure_scalar,
+  // pure_run), each argument bound the way the splice binds it.
+
+  // The flat `@value` class the annotation of `recv`'s field `field` names,
+  // resolved where `recv` is written, or — when nothing of the program's
+  // declares the name there — a stdlib module's; null for anything else.
+  const peg::Ast* field_run_class(const peg::Ast& recv,
+                                  std::string_view field) {
+    auto name = field_class_name(recv, field);
+    if (name.empty()) return nullptr;
+    const peg::Ast* cls = nullptr;
+    if (const peg::Ast* at = analysis_.class_declared_at(recv, name))
+      cls = at->parent.lock().get();
+    else if (!lookup_name(name))
+      cls = stdlib_value_class(name);
+    return cls && value_class_of(*cls) ? cls : nullptr;
+  }
+
+  // The field runs `e` reads, one per receiver and field however often it
+  // names them: each `name.field` (or `@field`) whose receiver's class says
+  // what its annotation names (field_run_class), read through a binding that
+  // holds one value for the whole statement. Not inside a nested function,
+  // which the statement does not run.
+  void collect_field_runs(const peg::Ast& e, std::vector<FieldRun>& out) {
+    if (declares_own_names(e)) return;
+    if (field_read_head(e)) add_field_run(*e.nodes[0], e.nodes[1]->token, out);
+    for (const auto& n : e.nodes) collect_field_runs(*n, out);
+  }
+  void add_field_run(const peg::Ast& head, std::string_view field,
+                     std::vector<FieldRun>& out) {
+    const Binding* b = lookup_at(head);
+    if (!b || b->lazy || b->conditional || b->awaits_implicit ||
+        b->mut_slot >= 0 || b->unboxed_class)
+      return;
+    for (const auto& r : out)
+      if (r.recv == b && r.field == field) return;
+    const peg::Ast* cls = field_run_class(head, field);
+    if (!cls) return;
+    out.push_back({b, &head, field,
+                   ExprResult{-1, /*owned=*/false, -1,
+                              value_class_of(*cls)->layout, cls}});
+  }
+
+  // The runs a statement part reads when its version reading them is pure
+  // (`pure()`, asked with them on), else nullopt. Never inside a body being
+  // spliced in or a version already reading runs.
+  template <class Pure>
+  std::optional<std::vector<FieldRun>> field_run_plan(
+      const peg::Ast& part, Pure&& pure, const FieldRun* target = nullptr) {
+    if (analysis_.value_layouts.empty() || !member_frames_.empty() ||
+        field_runs_)
+      return std::nullopt;
+    Lookahead ahead(*this);
+    std::vector<FieldRun> runs;
+    if (target) runs.push_back(*target);
+    collect_field_runs(part, runs);
+    if (runs.empty()) return std::nullopt;
+    FieldRunsOn on(*this, runs);
+    if (!pure()) return std::nullopt;
+    return runs;
+  }
+
+  // Emits the guard, then `fast` with the runs on, then `slow`, where every
+  // failed check lands. Each version leaves its result where the caller
+  // merges them, in slots taken before; its temps end with it, and it starts
+  // from the position the statement had, as the statement compiled once
+  // would. The runs the guard and the versions lay out are the statement's
+  // own: the scope around them gives their slots back where it ends, so a
+  // statement leaves the frame no larger than it found it.
+  template <class Fast, class Slow>
+  void compile_versions(const peg::Ast& at, std::vector<FieldRun>& runs,
+                        Fast&& fast, Slow&& slow) {
+    const uint32_t line = pend_line_, col = pend_col_;
+    push_scope(at, /*owned_mark=*/false);
+    // The guard's temps first, held to the statement's end, so every run
+    // laid out after them goes back with the scope.
+    std::vector<size_t> misses;
+    for (auto& r : runs) {
+      auto recv = read_binding(*r.recv_node, *r.recv);
+      r.recv_slot = recv.slot;
+      r.box = alloc_temp(*r.recv_node);
+      misses.push_back(emit(Op::PropPeek, r.box, 0, prop_site(r.field),
+                            recv.slot));
+      misses.push_back(emit(Op::DeclMatch, r.box, 0,
+                            class_decl_index(*r.run.unboxed_class),
+                            static_cast<int32_t>(r.run.unboxed->size())));
+    }
+    for (auto& r : runs) {
+      r.run.slot = alloc_run_slots(
+          *r.recv_node, value_class_of(*r.run.unboxed_class)->name,
+          *r.run.unboxed);
+      emit(Op::ValueUnbox, r.run.slot, r.box,
+           static_cast<int32_t>(r.run.unboxed->size()));
+    }
+    [[maybe_unused]] const size_t fast_from = chunk_.code.size();
+    {
+      FieldRunsOn on(*this, runs);
+      TempScope ts(*this);
+      fast();
+    }
+    assert(calls_nothing_since(fast_from) &&
+           "a version over field runs called code a program wrote");
+    size_t done = emit(Op::Jump, 0);
+    for (size_t m : misses) patch_to_here(m);
+    pend_line_ = line;
+    pend_col_ = col;
+    {
+      TempScope ts(*this);
+      slow();
+    }
+    patch_to_here(done);
+    pop_scope();
+  }
+
+  // Whether the code from `from` on holds none of the instructions that can
+  // run code a program wrote whatever their operands are: a call, a
+  // property read or write (a getter, a setter), a subscript (`__index__`),
+  // a string made of a value (`__str__`), a run reboxed for a consumer. An
+  // operator can too, on an object; that its operands are numbers and runs
+  // is pure_scalar's and pure_run's to promise, which no instruction says.
+  bool calls_nothing_since(size_t from) const {
+    for (size_t pc = from; pc < chunk_.code.size(); ++pc)
+      switch (chunk_.code[pc].op) {
+        case Op::Call: case Op::CallM: case Op::CallKw: case Op::CallRecv:
+        case Op::BMeth: case Op::MethGate: case Op::PropVal: case Op::PropRaw:
+        case Op::PropSet: case Op::PropWr: case Op::PropCo: case Op::Index:
+        case Op::IndexWr: case Op::IndexCo: case Op::IndexSet: case Op::Disp:
+        case Op::Fmt: case Op::StrCat: case Op::Println: case Op::ValueBox:
+          return false;
+        default:
+          break;
+      }
+    return true;
+  }
+
+  // The names a member body being walked binds (pure_body): the class of
+  // the run a name holds, or null for a scalar. Its `self` is the frame's.
+  using PureEnv = std::map<std::string_view, const peg::Ast*, std::less<>>;
+
+  // Whether compile_expr makes a scalar of `e` in a statement's version over
+  // field runs, running nothing of the program's on the way. `env` holds a
+  // member body's names; null at the statement, whose names are the scope's.
+  bool pure_scalar(const peg::Ast& e, const PureEnv* env) {
+    using namespace peg::udl;
+    if (literal_scalar(e)) return true;
+    switch (e.tag) {
+      case "IDENTIFIER"_: {
+        if (!env) return static_number(e);
+        auto it = env->find(e.token);
+        return it != env->end() && !it->second;
+      }
+      case "UNARY_MINUS"_:
+        return e.nodes.size() >= 2 && pure_scalar(*e.nodes[1], env);
+      case "ADDITIVE"_:
+      case "MULTIPLICATIVE"_:
+        // compile_fold's boxed form, over scalars only: each op one dispatch
+        // that no class can answer for.
+        for (size_t i = 0; i < e.nodes.size(); i++)
+          if (i % 2 ? !binary_op_for_token(e.nodes[i]->token)
+                    : !pure_scalar(*e.nodes[i], env))
+            return false;
+        return e.nodes.size() >= 3;
+      case "CALL"_:
+        return pure_math_call(e, env) ||
+               pure_chain(e, ChainEnd::Scalar, env) != nullptr;
+      default:
+        return false;
+    }
+  }
+
+  // `Math.f(args)` over scalars, the direct call Op::NsCall makes
+  // (ns_call_head): a stdlib function, which runs nothing of the program's.
+  bool pure_math_call(const peg::Ast& e, const PureEnv* env) {
+    return e.nodes.size() == 3 && e.nodes[0]->token == "Math" &&
+           ns_call_head(e) &&
+           std::ranges::all_of(e.nodes[2]->nodes, [&](const auto& a) {
+             return pure_scalar(*a, env);
+           });
+  }
+
+  // A postfix chain the run machinery splices, ending as `want`: on a field
+  // run, a run a name holds, a construction, or (for a scalar) a run-headed
+  // expression — the heads try_inline_value_chain, try_inline_name_chain and
+  // try_inline_run_headed_chain take. The class its head is a run of, whose
+  // run a chain ending in one still holds; null when it is not pure so.
+  const peg::Ast* pure_chain(const peg::Ast& e, ChainEnd want,
+                             const PureEnv* env) {
+    using namespace peg::udl;
+    if (e.tag != "CALL"_ || e.nodes.empty()) return nullptr;
+    const peg::Ast& head = *e.nodes[0];
+    const peg::Ast* cls = nullptr;
+    size_t from = 1;
+    if (const FieldRun* r = env ? nullptr : field_run_of(e)) {
+      cls = r->run.unboxed_class;
+      from = 2;
+    } else if (head.tag == "IDENTIFIER"_ && head.token == "self") {
+      if (env) cls = member_frames_.back().class_ast;
+    } else if (head.tag == "IDENTIFIER"_) {
+      if (!env) {
+        cls = run_class_named(head);
+      } else if (auto it = env->find(head.token); it != env->end()) {
+        cls = it->second;
+      }
+    }
+    auto ends = [&](const peg::Ast& c, size_t i) {
+      auto vc = value_class_of(c);
+      return vc && chain_end(e, i, c, vc->name, vc->layout) == want &&
+             pure_steps(e, i, c, env);
+    };
+    if (cls) return ends(*cls, from) ? cls : nullptr;
+    if (auto chain = construction_chain(e)) {
+      // The constructor's arguments compile as values (compile_args).
+      std::vector<const peg::Ast*> kinds;
+      for (const auto& a : e.nodes[chain->args]->nodes) {
+        if (!pure_scalar(*a, env)) return nullptr;
+        kinds.push_back(nullptr);
+      }
+      return chain->end == want &&
+                     pure_body(*chain->ctor, /*is_ctor=*/true, *chain->cls,
+                               chain->params, kinds) &&
+                     pure_steps(e, chain->args + 1, *chain->cls, env)
+                 ? chain->cls
+                 : nullptr;
+    }
+    if (want != ChainEnd::Scalar || head.tag == "IDENTIFIER"_ ||
+        e.nodes.size() < 2)
+      return nullptr;
+    const peg::Ast* hc = unboxed_value_expr_class(head);
+    return hc && pure_run(head, *hc, env) && ends(*hc, 1) ? hc : nullptr;
+  }
+
+  // Each step of a chain on a run of `cls` from `from` on: a field read, or
+  // a member spliced pure (pure_member).
+  bool pure_steps(const peg::Ast& e, size_t from, const peg::Ast& cls,
+                  const PureEnv* env) {
+    using namespace peg::udl;
+    for (size_t i = from; i + 1 < e.nodes.size(); i += 2) {
+      const auto& args = *e.nodes[i + 1];
+      if (args.original_tag != "ARGUMENTS"_) break;  // a field read ends it
+      std::vector<const peg::Ast*> as;
+      for (const auto& a : args.nodes) as.push_back(a.get());
+      if (!pure_member(cls, value_method_ast(cls, e.nodes[i]->token), as, env))
+        return false;
+    }
+    return true;
+  }
+
+  // A member `m` of `cls`, spliced with `args` bound to its parameters as
+  // splice_member_arg binds them, its body pure for them: a method step, an
+  // operator (one operand) or a negation (none).
+  bool pure_member(const peg::Ast& cls, const peg::Ast* m,
+                   const std::vector<const peg::Ast*>& args,
+                   const PureEnv* env) {
+    auto ps = m ? inline_params(*m) : std::nullopt;
+    if (!ps || ps->size() != args.size()) return false;
+    std::vector<const peg::Ast*> kinds;
+    for (size_t j = 0; j < args.size(); j++) {
+      auto k = pure_arg(cls, *m, (*ps)[j], *args[j], env);
+      if (!k) return false;
+      kinds.push_back(*k);
+    }
+    return pure_body(*m, /*is_ctor=*/false, cls, *ps, kinds);
+  }
+
+  // How a spliced member's parameter `p` takes `arg` (splice_member_arg): a
+  // run of the argument's class when the parameter takes it as one, the
+  // argument's value otherwise — the class, or null for a scalar, when the
+  // argument is pure that way; nullopt when not. A body's own names hold no
+  // binding while it is only asked about, so a bare one answers from `env`.
+  std::optional<const peg::Ast*> pure_arg(const peg::Ast& cls,
+                                          const peg::Ast& m,
+                                          const InlineParam& p,
+                                          const peg::Ast& arg,
+                                          const PureEnv* env) {
+    using namespace peg::udl;
+    const peg::Ast* acls = nullptr;
+    if (env && arg.tag == "IDENTIFIER"_) {
+      if (auto it = env->find(arg.token); it != env->end()) acls = it->second;
+    } else {
+      acls = unboxed_value_expr_class(arg);
+    }
+    if (acls && param_takes_run(cls, m, p, *acls)) {
+      if (!pure_run(arg, *acls, env)) return std::nullopt;
+      return acls;
+    }
+    if (!pure_scalar(arg, env)) return std::nullopt;
+    return nullptr;
+  }
+
+  // Whether compile_unboxed_value_expr makes a run of `cls` of `e`, running
+  // nothing of the program's on the way.
+  bool pure_run(const peg::Ast& e, const peg::Ast& cls, const PureEnv* env) {
+    using namespace peg::udl;
+    if ((e.tag == "ADDITIVE"_ || e.tag == "MULTIPLICATIVE"_) &&
+        e.nodes.size() >= 3) {
+      if (fold_resolves_to_class(e) != &cls) return false;
+      auto f = fold_steps(e);
+      if (!pure_run(*f.head, cls, env)) return false;
+      return std::ranges::all_of(f.steps, [&](const FoldStep& s) {
+        return pure_member(
+            cls, s.dunder.empty() ? nullptr : value_method_ast(cls, s.dunder),
+            {s.operand}, env);
+      });
+    }
+    if (e.tag == "UNARY_MINUS"_ && e.nodes.size() >= 2)
+      return unary_minus_resolves_to_class(e) == &cls &&
+             pure_run(*e.nodes[1], cls, env) &&
+             pure_member(cls, value_method_ast(cls, "__neg__"), {}, env);
+    if (e.tag == "IDENTIFIER"_) {
+      if (!env) return e.token != "self" && run_class_named(e) == &cls;
+      auto it = env->find(e.token);
+      return it != env->end() && it->second == &cls;
+    }
+    return pure_chain(e, ChainEnd::Run, env) == &cls;
+  }
+
+  // A member's body, spliced with `self` a run of `cls` and its parameters
+  // bound as `kinds` says: its `let`s and a constructor's field stores over
+  // scalars, its tail what the member leaves (inline_body_end).
+  bool pure_body(const peg::Ast& m, bool is_ctor, const peg::Ast& cls,
+                 const std::vector<InlineParam>& ps,
+                 const std::vector<const peg::Ast*>& kinds) {
+    using namespace peg::udl;
+    auto vc = value_class_of(cls);
+    if (!vc) return false;
+    ChainEnd end = inline_body_end(m, is_ctor, cls, vc->name, vc->layout);
+    if (end == ChainEnd::Declined) return false;
+    InMember frame(*this, m, cls);
+    PureEnv env;
+    for (size_t i = 0; i < ps.size(); i++)
+      env[ps[i].name] = ps[i].field ? nullptr : kinds[i];
+    auto statement_ok = [&](const peg::Ast& s) {
+      if (s.tag != "ASSIGNMENT"_) return false;
+      auto av = culebra::view_assignment(s);
+      if (av.compound || !av.rhs || !pure_scalar(*av.rhs, &env)) return false;
+      if (const auto* name = culebra::assign_name_target(s, av)) {
+        if (!av.is_let && !av.is_mut) return false;
+        env[name->token] = nullptr;
+        return true;
+      }
+      return is_ctor;  // `@x = v`: the run's own field
+    };
+    auto stmts = culebra::body_stmts(**culebra::view_method(m).body);
+    if (is_ctor)
+      return std::ranges::all_of(stmts, [&](auto* s) {
+        return statement_ok(*s);
+      });
+    if (stmts.empty()) return true;
+    for (size_t i = 0; i + 1 < stmts.size(); i++)
+      if (!statement_ok(*stmts[i])) return false;
+    return end == ChainEnd::Run ? pure_run(*stmts.back(), cls, &env)
+                                : pure_scalar(*stmts.back(), &env);
+  }
+
+  // The field run a run expression's instance descends from: the receiver
+  // whose own member made it — a fold's head, a negation's operand, a
+  // chain's head — so its class is that field's instance's. Null for a run
+  // made by a construction or held by a local.
+  const FieldRun* run_lineage(const peg::Ast& e) {
+    using namespace peg::udl;
+    if ((e.tag == "ADDITIVE"_ || e.tag == "MULTIPLICATIVE"_) &&
+        e.nodes.size() >= 3)
+      return run_lineage(*fold_steps(e).head);
+    if (e.tag == "UNARY_MINUS"_ && e.nodes.size() >= 2)
+      return run_lineage(*e.nodes[1]);
+    return field_run_of(e);
+  }
+
+  // The runs a right-hand side compile_unboxed_value_expr makes a run of
+  // `cls` of — compile_assign_rhs a scalar of, `cls` null — is compiled in
+  // two versions over, or nullopt.
+  std::optional<std::vector<FieldRun>> rhs_plan(const peg::Ast& rhs,
+                                                const peg::Ast* cls) {
+    return field_run_plan(rhs, [&] {
+      return cls ? pure_run(rhs, *cls, nullptr) : pure_scalar(rhs, nullptr);
+    });
+  }
+
+  // The runs a write of a field, the assignment `node` (`name.field = rhs`,
+  // `name.field op= rhs`), is compiled in two versions over, the field's own
+  // first, or nullopt: the field's new value must be its own instance's
+  // arithmetic (`b.vel = b.vel + g * k`, `@q *= s`), whose class is the
+  // field's instance's (run_lineage), so the store keeps it.
+  std::optional<std::vector<FieldRun>> field_write_plan(
+      const peg::Ast& node, const culebra::AssignmentView& av) {
+    using namespace peg::udl;
+    if (av.lvalcnt != 2 || !av.rhs || !av.type_annotation.empty() ||
+        (av.compound && av.op_base == "??"))
+      return std::nullopt;
+    const peg::Ast& head = *node.nodes[av.lvaloff];
+    const peg::Ast& fin = *node.nodes[av.lvaloff + 1];
+    // A well-known name's store checks its contract, which ValueStore leaves
+    // to PropSet.
+    if (head.tag != "IDENTIFIER"_ || fin.original_tag != "DOT"_ ||
+        culebra::is_well_known_prop(fin.token))
+      return std::nullopt;
+    std::vector<FieldRun> target;
+    {
+      Lookahead ahead(*this);
+      add_field_run(head, fin.token, target);
+    }
+    if (target.empty()) return std::nullopt;
+    const peg::Ast& cls = *target[0].run.unboxed_class;
+    auto vc = value_class_of(cls);
+    return field_run_plan(
+        *av.rhs,
+        [&] {
+          if (!av.compound)
+            return run_lineage(*av.rhs) == &(*field_runs_)[0] &&
+                   pure_run(*av.rhs, cls, nullptr);
+          auto dunder = splice_dunder_for_token(av.op_base);
+          return dunder_splices(dunder, cls, vc->name, vc->layout) &&
+                 pure_member(cls, value_method_ast(cls, dunder), {av.rhs},
+                             nullptr);
+        },
+        &target[0]);
+  }
+
+  // compile_unboxed_value_expr for a `let`'s right-hand side, or with its run
+  // copied into the home of `into`, a binding it writes: in two versions
+  // when `rhs` reads field runs, each copying its run into one home taken
+  // before them — `into`'s, or a fresh one the `let` keeps.
+  ExprResult compile_run_versions(const peg::Ast& rhs,
+                                  const Binding* into = nullptr) {
+    const peg::Ast* cls = unboxed_value_expr_class(rhs);
+    auto plan = cls ? rhs_plan(rhs, cls) : std::nullopt;
+    if (!plan) {
+      auto r = compile_unboxed_value_expr(rhs);
+      return into ? store_unboxed_home(*into, r) : r;
+    }
+    auto vc = value_class_of(*cls);
+    ExprResult home =
+        into ? ExprResult{into->slot, /*owned=*/false, -1,
+                          into->unboxed_layout, into->unboxed_class}
+             : ExprResult{alloc_run_slots(rhs, vc->name, *vc->layout),
+                          /*owned=*/false, -1, vc->layout, cls};
+    auto into_home = [&] {
+      auto r = compile_unboxed_value_expr(rhs);
+      copy_run(home.slot, r.slot, home.unboxed->size(),
+               /*dst_is_fresh=*/false);
+    };
+    compile_versions(rhs, *plan, into_home, into_home);
+    return home;
+  }
+
+  // compile_assign_rhs, in two versions when the right-hand side reads field
+  // runs and comes out a scalar: both leave their value in one temp.
+  ExprResult compile_rhs_versions(const peg::Ast& ast,
+                                  const culebra::AssignmentView& av) {
+    auto plan = av.rhs ? rhs_plan(*av.rhs, nullptr) : std::nullopt;
+    if (!plan) return compile_assign_rhs(ast, av);
+    int32_t dst = alloc_temp(ast);
+    auto into_dst = [&] {
+      store_into(dst, compile_assign_rhs(ast, av), /*dst_is_fresh=*/true);
+    };
+    compile_versions(*av.rhs, *plan, into_dst, into_dst);
+    return {dst, /*owned=*/true};
+  }
+
+  // A field write: in two versions when field_write_plan has one — the
+  // first a run, stored as an instance of the field's own class
+  // (Op::ValueStore), the second `slow`, the write as written, both leaving
+  // the assignment's value in one temp — else `slow` alone.
+  template <class Slow>
+  ExprResult compile_field_write(const peg::Ast& ast,
+                                 const culebra::AssignmentView& av,
+                                 Slow&& slow) {
+    auto plan = field_write_plan(ast, av);
+    if (!plan) return slow();
+    const peg::Ast& fin = *ast.nodes[av.lvaloff + 1];
+    int32_t dst = alloc_temp(ast);
+    compile_versions(
+        ast, *plan,
+        [&] {
+          const FieldRun& t = (*plan)[0];
+          ExprResult run = t.run;
+          if (av.compound) {
+            auto dunder = splice_dunder_for_token(av.op_base);
+            auto rhs =
+                compile_spliced_operand(dunder, *t.run.unboxed_class, *av.rhs);
+            auto r = try_inline_operator(ast, t.run, dunder, {rhs});
+            assert(r && "field_write_plan promised the compound step splices");
+            run = *r;
+          } else {
+            run = compile_unboxed_value_expr(*av.rhs);
+          }
+          chunk_.value_store_specs.push_back(
+              {t.recv_slot, t.box, static_cast<int32_t>(t.run.unboxed->size()),
+               packed_pos(fin)});
+          // PropSet's position: the assignment.
+          StampGuard pos(*this, ast);
+          emit(Op::ValueStore, dst, run.slot, prop_site(fin.token),
+               static_cast<int32_t>(chunk_.value_store_specs.size() - 1));
+        },
+        [&] { store_into(dst, slow(), /*dst_is_fresh=*/true); });
+    return {dst, /*owned=*/true};
   }
 
   // `C.new(args)` or `C(args)` and everything after it — or, for a Run, a
@@ -13057,14 +13822,13 @@ class Compiler {
       return ExprResult{b->slot, /*owned=*/false, -1, b->unboxed_layout,
                         b->unboxed_class};
     }
-    // A chain on a local ending in a run (`v.rot(w)`). One ending in a scalar
-    // is try_inline_name_chain's, which compile_call asks next.
+    // A chain on a local or a field run ending in a run (`v.rot(w)`,
+    // `b.vel`). One ending in a scalar is try_inline_name_chain's, which
+    // compile_call asks next.
     if (want == ChainEnd::Run)
       if (auto nc = name_chain(ast)) {
         if (nc->end != ChainEnd::Run) return std::nullopt;
-        return splice_trailing_chain(nc->head, ast, 1,
-                                     *nc->head.unboxed_class, nc->class_name,
-                                     nc->head.unboxed);
+        return splice_name_chain(*nc, ast);
       }
     auto chain = construction_chain(ast);
     if (!chain || chain->end != want) return std::nullopt;
@@ -13398,6 +14162,11 @@ class Compiler {
   // chain_end the same question from the same index.
   std::optional<ExprResult> try_inline_name_chain(const peg::Ast& ast) {
     using namespace peg::udl;
+    // The same on a field run (`b.q.x`, `b.q.norm()`).
+    if (auto fc = field_chain(ast)) {
+      if (fc->end != ChainEnd::Scalar) return std::nullopt;
+      return splice_name_chain(*fc, ast);
+    }
     if (ast.nodes.size() < 2 || ast.nodes[0]->tag != "IDENTIFIER"_)
       return std::nullopt;
     auto head = name_run(*ast.nodes[0]);
@@ -15949,8 +16718,10 @@ inline const char* op_name(Op op) {
       "CellNew",   "CellGet",   "CellSet",    "CellRelease",  "BindCapture",
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "ClsSelf",      "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "EnumVariant",  "TypeMatch",
+      "DeclMatch",
       "ClassObj",  "BindStatic",
-      "MakeInst",  "ValueBox",  "FieldsInit", "FieldInit", "SelfMerge",
+      "MakeInst",  "ValueBox",  "PropPeek",  "ValueUnbox", "ValueStore",
+      "FieldsInit", "FieldInit", "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
       "ChkArg",    "ArgTag",    "JumpIfFilled", "ArgsRest",   "KwRest",
       "RecEnter",
@@ -17102,8 +17873,10 @@ struct Exec {
         &&L_CellSet, &&L_CellRelease, &&L_BindCapture, &&L_ImmutErr,
         &&L_UnboundErr, &&L_MultifnReg, &&L_MfSelf, &&L_ClsSelf, &&L_WkErr,
         &&L_ClassMeta, &&L_DeriveFn, &&L_RegPack, &&L_EnumVariant,
-        &&L_TypeMatch, &&L_ClassObj, &&L_BindStatic, &&L_MakeInst,
-        &&L_ValueBox, &&L_FieldsInit, &&L_FieldInit, &&L_SelfMerge,
+        &&L_TypeMatch, &&L_DeclMatch, &&L_ClassObj, &&L_BindStatic,
+        &&L_MakeInst,
+        &&L_ValueBox, &&L_PropPeek, &&L_ValueUnbox, &&L_ValueStore,
+        &&L_FieldsInit, &&L_FieldInit, &&L_SelfMerge,
         &&L_TraitReset, &&L_TraitDefault, &&L_TraitReg, &&L_PosSnap,
         &&L_ChkTypeAt, &&L_ChkArg, &&L_ArgTag, &&L_JumpIfFilled, &&L_ArgsRest,
         &&L_KwRest, &&L_RecEnter, &&L_RecLeave, &&L_NsGet, &&L_SetOpPos,
@@ -18904,7 +19677,8 @@ struct Exec {
           try {
             meta = culebra_runtime_build_class_meta(
                 c.name_table_class[in.d].c_str(), names.data(), &regs[in.b],
-                n_methods, c.name_table_flags[in.d]);
+                n_methods, c.name_table_flags[in.d],
+                &p.class_decls[c.name_table_decl[in.d]]);
           } catch (...) {
             for (int32_t i = 0; i < in.c; ++i)
               regs[in.b + i] = JitValue{TAG_NIL, 0};
@@ -18970,6 +19744,18 @@ struct Exec {
           break;
         } while (0);
         VM_NEXT();
+      L_DeclMatch:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          const JitValue& v = regs[in.a];
+          if (culebra_runtime_is_of_decl(static_cast<int8_t>(v.tag), v.data,
+                                         &p.class_decls[in.c], in.d))
+            ++ip;
+          else
+            ip = code + static_cast<size_t>(in.b);
+          break;
+        } while (0);
+        VM_NEXT();
       L_ClassObj:
         do {
           [[maybe_unused]] const Insn& in = *ip;
@@ -19021,6 +19807,54 @@ struct Exec {
               &spec.shape, spec.keys.data(),
               static_cast<int64_t>(spec.keys.size()),
               reinterpret_cast<JitObject*>(regs[in.d].data), &regs[in.b]);
+          ++ip;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_PropPeek:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          const JitValue& recv = regs[in.d];
+          const Chunk::PropSite& site = c.prop_sites[in.c];
+          JitValue* hit =
+              recv.tag == TAG_OBJECT
+                  ? culebra_runtime_prop_peek(
+                        reinterpret_cast<JitObject*>(recv.data), site.key,
+                        &site.get)
+                  : nullptr;
+          if (!hit) {
+            ip = code + static_cast<size_t>(in.b);
+            break;
+          }
+          _culebra_value_retain_impl(static_cast<int8_t>(hit->tag), hit->data);
+          regs[in.a] = *hit;
+          ++ip;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_ValueUnbox:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          auto* obj = reinterpret_cast<JitObject*>(regs[in.b].data);
+          assert(obj->slots.size() == static_cast<size_t>(in.c) &&
+                 "a DeclMatch vouched for the declaration's flat layout");
+          for (int32_t k = 0; k < in.c; ++k)
+            regs[in.a + k] = obj->slots[static_cast<size_t>(k)].value;
+          ++ip;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_ValueStore:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          const auto& s = c.value_store_specs[in.d];
+          const Chunk::PropSite& site = c.prop_sites[in.c];
+          auto [line, col] = chunk_pos_at(c, VM_PC);
+          auto dot = culebra::unpack_pos(s.dot);
+          regs[in.a] = culebra_runtime_value_store(
+              reinterpret_cast<JitObject*>(regs[s.recv].data), site.key,
+              &site.set, reinterpret_cast<JitObject*>(regs[s.box].data),
+              &regs[in.b], line, col, dot.line, dot.col);
           ++ip;
           break;
         } while (0);

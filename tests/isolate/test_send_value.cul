@@ -138,4 +138,36 @@ assert_eq(
   "SendError: a @value instance whose `new` has not returned is not Sendable",
 )
 
+# --- a field's value, in a worker: one it built, and one a message brought --
+# (the statement in `advance` compiles a version over the field's fields,
+# guarded by the declaration the instance's class carries across)
+@value
+class F {
+  x: Float
+  new(@x: Float) {}
+  __add__(o) {
+    F(@x + o.x)
+  }
+}
+class Holder {
+  f: F
+}
+let advance = fn (h: Holder) {
+  let one = F(1.0)
+  h.f = h.f + one
+}
+assert_eq(Isolate.spawn(fn () {
+  let h = Holder()
+  h.f = F(1.0)
+  advance(h)
+  advance(h)
+  h.f.x
+}).join(), 3.0)
+let sent = Holder()
+sent.f = F(5.0)
+assert_eq(Isolate.spawn(fn (h) {
+  advance(h)
+  [h.f.x, type_of(h.f)]
+}, sent).join(), [6.0, "F"])
+
 inspect("test_send_value: all assertions passed")

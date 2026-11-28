@@ -426,6 +426,7 @@ inline culebra::ObjectFacts _jit_object_facts(const JitObject* o) {
   if (o->is_class_meta && o->specials) {
     f.meta_flags = static_cast<uint32_t>(_jit_class_meta_flags(o));
     f.dir_kind = o->specials->dir_kind;
+    f.class_decl = o->specials->class_decl;
   }
   return f;
 }
@@ -774,7 +775,7 @@ inline void _jit_rebuilt_object_done(JitObject* o, std::string_view names,
         o, names.substr(0, sep),
         sep == std::string_view::npos ? std::string_view{}
                                       : names.substr(sep + 1),
-        f.meta_flags, f.dir_kind);
+        f.meta_flags, f.dir_kind, f.class_decl);
   }
   assert(!cls || cls->is_class);
   if (meta) o->link_class(meta, cls);
@@ -2092,6 +2093,7 @@ struct JitSvFreezer {
                  (static_cast<size_t>(static_cast<uint8_t>(s.facts.dir_kind))
                   << 8));
       mix(h, reinterpret_cast<size_t>(s.facts.decl));
+      mix(h, static_cast<size_t>(s.facts.class_decl));
       for (size_t i = base; i < keys.size(); i++) {
         mix(h, static_cast<size_t>(keys[i].tag));
         mix(h, static_cast<size_t>(keys[i].data));

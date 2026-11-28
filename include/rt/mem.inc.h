@@ -1028,6 +1028,9 @@ inline constexpr auto make_derived_method
     = "culebra_runtime_make_derived_method";
 inline constexpr auto build_class_meta
     = "culebra_runtime_build_class_meta";
+inline constexpr auto is_of_decl          = "culebra_runtime_is_of_decl";
+inline constexpr auto prop_peek           = "culebra_runtime_prop_peek";
+inline constexpr auto value_store         = "culebra_runtime_value_store";
 inline constexpr auto object_set          = "culebra_runtime_object_set";
 inline constexpr auto check_namespace_write
     = "culebra_runtime_check_namespace_write";

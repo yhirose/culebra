@@ -172,6 +172,13 @@ struct FnAnalysis {
   };
   std::unordered_map<const peg::Ast*, FlatLayout> value_layouts;
 
+  // Each class declaration's id slot in the program this pass compiles into
+  // (vm::VmProgram::class_decls), given the first time the compile asks:
+  // the one its ClassMeta stamps the meta with, and the one a site compiled
+  // against the declaration checks a value by (Op::DeclMatch). Per pass, by
+  // the declaration, like value_layouts.
+  std::unordered_map<const peg::Ast*, int32_t> class_decls;
+
   // A flat `@value` class's own declaration AST, by its declared name, for
   // a stdlib module's class this compile pass has laid out (value_layouts).
   // Exists for exactly one shape: a class declared inside a
@@ -248,12 +255,29 @@ struct FnAnalysis {
     const auto& s = res_.symbols[sym];
     return s.declarations == 1 && s.forms == (uint16_t{1} << static_cast<int>(form));
   }
-  // The declarations whose every read is a Long or a Float (vm.h's
-  // static_number), by declaration_of's node: a `let` of a number, or a
-  // parameter annotated as one. Filled as they compile and never taken
-  // back, so a question asked before one compiles answers no, and one asked
-  // after, yes.
+  // The name node of the class `name` means where `at` is written, when one
+  // declaration, a class's, binds it there: what a field's annotation names,
+  // read where the field is used. nullptr for anything else, a name an
+  // earlier REPL input declared included.
+  const peg::Ast* class_declared_at(const peg::Ast& at,
+                                    std::string_view name) const {
+    auto use = res_.uses.find(&at);
+    size_t scope = use != res_.uses.end() ? use->second.scope
+                                          : res_.scope_at(at.position);
+    size_t sym = res_.lookup(scope, name);
+    if (sym == culebra::resolve::kNone) return nullptr;
+    const auto& s = res_.symbols[sym];
+    return s.kind == culebra::resolve::SymbolKind::Class && s.declarations == 1
+               ? s.declared_at
+               : nullptr;
+  }
+  // The parameters whose every read is a Long or a Float (vm.h's
+  // static_number), by declaration_of's node: one annotated as a number.
+  // Filled as their functions compile and never taken back.
   std::unordered_set<const peg::Ast*> number_declarations;
+  // The same answer for each `let` asked about (vm.h's number_let), which
+  // its declaration gives whether or not it has compiled.
+  std::unordered_map<const peg::Ast*, bool> number_lets;
 
   // `session`: the names earlier inputs of a session declared, when
   // `session_top` (resolve::Options::session).

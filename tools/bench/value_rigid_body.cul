@@ -1,0 +1,354 @@
+# One step of a 6-DOF rigid-body integrator (semi-implicit Euler), the shape
+# culebra #33 measures: rotate the body force into the world frame, Euler's
+# equations for the body rates, position, quaternion update and
+# renormalisation. Each row integrates the same body; every row after
+# `floats` has to end on the same 13 numbers to the last bit, which is the
+# oracle for the file.
+#
+#   floats         the floor: thirteen Float locals
+#   V0             the state in `@value` fields of an ordinary class, the
+#                  rotation as a `Mat3` of three `V3` rows, Euler's
+#                  equations as a typed helper function, the step a function
+#   V3 fields      V0 without the nested value, the helper and the step
+#                  call: only the fields are left
+#   V5 hand-flat   the state as thirteen typed Float fields, read into `V3`
+#                  and `Quat` locals once and written back once: what a flat
+#                  field layout would compile to, written by hand
+#
+# Run on the -O3 + LTO binary (`just build`); build-dev is -O1.
+#
+#   culebra tools/bench/value_rigid_body.cul [steps]
+#   CULEBRA_JIT_REOPTIMIZE=wait culebra --jit tools/bench/value_rigid_body.cul [steps]
+
+let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 200000
+
+@value
+class V3 {
+  x: Float
+  y: Float
+  z: Float
+
+  new(x: Float, y: Float, z: Float) {
+    @x = x
+    @y = y
+    @z = z
+  }
+
+  __add__(o) {
+    V3(@x + o.x, @y + o.y, @z + o.z)
+  }
+
+  __sub__(o) {
+    V3(@x - o.x, @y - o.y, @z - o.z)
+  }
+
+  __mul__(s) {
+    V3(@x * s, @y * s, @z * s)
+  }
+
+  dot(o) {
+    @x * o.x + @y * o.y + @z * o.z
+  }
+
+  cross(o) {
+    V3(@y * o.z - @z * o.y, @z * o.x - @x * o.z, @x * o.y - @y * o.x)
+  }
+
+  times(o) {
+    V3(@x * o.x, @y * o.y, @z * o.z)
+  }
+
+  over(o) {
+    V3(@x / o.x, @y / o.y, @z / o.z)
+  }
+}
+
+@value
+class Quat {
+  w: Float
+  x: Float
+  y: Float
+  z: Float
+
+  new(w: Float, x: Float, y: Float, z: Float) {
+    @w = w
+    @x = x
+    @y = y
+    @z = z
+  }
+
+  __add__(o) {
+    Quat(@w + o.w, @x + o.x, @y + o.y, @z + o.z)
+  }
+
+  __mul__(s) {
+    Quat(@w * s, @x * s, @y * s, @z * s)
+  }
+
+  # self ⊗ (0, r): the derivative of the orientation for body rates r.
+  spin(r) {
+    Quat(-(@x * r.x + @y * r.y + @z * r.z),
+         @w * r.x + @y * r.z - @z * r.y,
+         @w * r.y - @x * r.z + @z * r.x,
+         @w * r.z + @x * r.y - @y * r.x)
+  }
+
+  norm() {
+    Math.sqrt(@w * @w + @x * @x + @y * @y + @z * @z)
+  }
+
+  row0() {
+    V3(1.0 - 2.0 * (@y * @y + @z * @z), 2.0 * (@x * @y - @z * @w), 2.0 * (@x * @z + @y * @w))
+  }
+
+  row1() {
+    V3(2.0 * (@x * @y + @z * @w), 1.0 - 2.0 * (@x * @x + @z * @z), 2.0 * (@y * @z - @x * @w))
+  }
+
+  row2() {
+    V3(2.0 * (@x * @z - @y * @w), 2.0 * (@y * @z + @x * @w), 1.0 - 2.0 * (@x * @x + @y * @y))
+  }
+}
+
+@value
+class Mat3 {
+  r0: V3
+  r1: V3
+  r2: V3
+
+  new(r0: V3, r1: V3, r2: V3) {
+    @r0 = r0
+    @r1 = r1
+    @r2 = r2
+  }
+
+  apply(v) {
+    V3(@r0.dot(v), @r1.dot(v), @r2.dot(v))
+  }
+}
+
+let DT = 1.0 / 240.0
+let INV_M = 1.0 / 2.5
+let FB = [0.3, -0.2, 9.0]
+let TB = [0.0, 0.0, 0.0]
+let IB = [0.4, 0.55, 0.7]
+
+let floats = fn () {
+  let [fx, fy, fz] = FB
+  let [tx, ty, tz] = TB
+  let [ix, iy, iz] = IB
+  let k = INV_M * DT
+  let h = 0.5 * DT
+  let mut px = 0.0
+  let mut py = 0.0
+  let mut pz = 0.0
+  let mut vx = 0.0
+  let mut vy = 0.0
+  let mut vz = 0.0
+  let mut qw = 1.0
+  let mut qx = 0.0
+  let mut qy = 0.0
+  let mut qz = 0.0
+  let mut wx = 0.3
+  let mut wy = -0.4
+  let mut wz = 0.5
+  for _ in 0..N {
+    let r0x = 1.0 - 2.0 * (qy * qy + qz * qz)
+    let r0y = 2.0 * (qx * qy - qz * qw)
+    let r0z = 2.0 * (qx * qz + qy * qw)
+    let r1x = 2.0 * (qx * qy + qz * qw)
+    let r1y = 1.0 - 2.0 * (qx * qx + qz * qz)
+    let r1z = 2.0 * (qy * qz - qx * qw)
+    let r2x = 2.0 * (qx * qz - qy * qw)
+    let r2y = 2.0 * (qy * qz + qx * qw)
+    let r2z = 1.0 - 2.0 * (qx * qx + qy * qy)
+    let gx = r0x * fx + r0y * fy + r0z * fz
+    let gy = r1x * fx + r1y * fy + r1z * fz
+    let gz = r2x * fx + r2y * fy + r2z * fz
+    vx = vx + gx * k
+    vy = vy + gy * k
+    vz = vz + gz * k
+    let jx = ix * wx
+    let jy = iy * wy
+    let jz = iz * wz
+    let cx = wy * jz - wz * jy
+    let cy = wz * jx - wx * jz
+    let cz = wx * jy - wy * jx
+    let ax = (tx - cx) / ix
+    let ay = (ty - cy) / iy
+    let az = (tz - cz) / iz
+    wx = wx + ax * DT
+    wy = wy + ay * DT
+    wz = wz + az * DT
+    px = px + vx * DT
+    py = py + vy * DT
+    pz = pz + vz * DT
+    let sw = -(qx * wx + qy * wy + qz * wz)
+    let sx = qw * wx + qy * wz - qz * wy
+    let sy = qw * wy - qx * wz + qz * wx
+    let sz = qw * wz + qx * wy - qy * wx
+    qw = qw + sw * h
+    qx = qx + sx * h
+    qy = qy + sy * h
+    qz = qz + sz * h
+    let n = 1.0 / Math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    qw = qw * n
+    qx = qx * n
+    qy = qy * n
+    qz = qz * n
+  }
+  [px, py, pz, vx, vy, vz, qw, qx, qy, qz, wx, wy, wz]
+}
+
+class Body {
+  pos: V3 = V3(0.0, 0.0, 0.0)
+  vel: V3 = V3(0.0, 0.0, 0.0)
+  q: Quat = Quat(1.0, 0.0, 0.0, 0.0)
+  w: V3 = V3(0.3, -0.4, 0.5)
+
+  state() {
+    [@pos.x, @pos.y, @pos.z, @vel.x, @vel.y, @vel.z,
+     @q.w, @q.x, @q.y, @q.z, @w.x, @w.y, @w.z]
+  }
+}
+
+fn euler(i: V3, w: V3, t: V3) {
+  let a = t - w.cross(i.times(w))
+  a.over(i)
+}
+
+fn step0(b: Body, f: V3, t: V3, i: V3, k: Float, h: Float) {
+  let m = Mat3(b.q.row0(), b.q.row1(), b.q.row2())
+  b.vel = b.vel + m.apply(f) * k
+  b.w = b.w + euler(i, b.w, t) * DT
+  b.pos = b.pos + b.vel * DT
+  b.q = b.q + b.q.spin(b.w) * h
+  b.q = b.q * (1.0 / b.q.norm())
+}
+
+let v0 = fn (b: Body, steps: Long) {
+  let f = V3(FB[0], FB[1], FB[2])
+  let t = V3(TB[0], TB[1], TB[2])
+  let i = V3(IB[0], IB[1], IB[2])
+  let k = INV_M * DT
+  let h = 0.5 * DT
+  for _ in 0..steps {
+    step0(b, f, t, i, k, h)
+  }
+}
+
+let v3 = fn (b: Body, steps: Long) {
+  let f = V3(FB[0], FB[1], FB[2])
+  let t = V3(TB[0], TB[1], TB[2])
+  let i = V3(IB[0], IB[1], IB[2])
+  let k = INV_M * DT
+  let h = 0.5 * DT
+  for _ in 0..steps {
+    let r0 = V3(1.0 - 2.0 * (b.q.y * b.q.y + b.q.z * b.q.z), 2.0 * (b.q.x * b.q.y - b.q.z * b.q.w), 2.0 * (b.q.x * b.q.z + b.q.y * b.q.w))
+    let r1 = V3(2.0 * (b.q.x * b.q.y + b.q.z * b.q.w), 1.0 - 2.0 * (b.q.x * b.q.x + b.q.z * b.q.z), 2.0 * (b.q.y * b.q.z - b.q.x * b.q.w))
+    let r2 = V3(2.0 * (b.q.x * b.q.z - b.q.y * b.q.w), 2.0 * (b.q.y * b.q.z + b.q.x * b.q.w), 1.0 - 2.0 * (b.q.x * b.q.x + b.q.y * b.q.y))
+    let g = V3(r0.dot(f), r1.dot(f), r2.dot(f))
+    b.vel = b.vel + g * k
+    let a = t - b.w.cross(i.times(b.w))
+    b.w = b.w + a.over(i) * DT
+    b.pos = b.pos + b.vel * DT
+    b.q = b.q + b.q.spin(b.w) * h
+    b.q = b.q * (1.0 / b.q.norm())
+  }
+}
+
+class FlatBody {
+  px: Float
+  py: Float
+  pz: Float
+  vx: Float
+  vy: Float
+  vz: Float
+  qw: Float = 1.0
+  qx: Float
+  qy: Float
+  qz: Float
+  wx: Float = 0.3
+  wy: Float = -0.4
+  wz: Float = 0.5
+
+  state() {
+    [@px, @py, @pz, @vx, @vy, @vz, @qw, @qx, @qy, @qz, @wx, @wy, @wz]
+  }
+}
+
+let v5 = fn (b: FlatBody, steps: Long) {
+  let f = V3(FB[0], FB[1], FB[2])
+  let t = V3(TB[0], TB[1], TB[2])
+  let i = V3(IB[0], IB[1], IB[2])
+  let k = INV_M * DT
+  let h = 0.5 * DT
+  for _ in 0..steps {
+    let mut pos = V3(b.px, b.py, b.pz)
+    let mut vel = V3(b.vx, b.vy, b.vz)
+    let mut q = Quat(b.qw, b.qx, b.qy, b.qz)
+    let mut w = V3(b.wx, b.wy, b.wz)
+    let r0 = V3(1.0 - 2.0 * (q.y * q.y + q.z * q.z), 2.0 * (q.x * q.y - q.z * q.w), 2.0 * (q.x * q.z + q.y * q.w))
+    let r1 = V3(2.0 * (q.x * q.y + q.z * q.w), 1.0 - 2.0 * (q.x * q.x + q.z * q.z), 2.0 * (q.y * q.z - q.x * q.w))
+    let r2 = V3(2.0 * (q.x * q.z - q.y * q.w), 2.0 * (q.y * q.z + q.x * q.w), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+    let g = V3(r0.dot(f), r1.dot(f), r2.dot(f))
+    vel = vel + g * k
+    let a = t - w.cross(i.times(w))
+    w = w + a.over(i) * DT
+    pos = pos + vel * DT
+    q = q + q.spin(w) * h
+    q = q * (1.0 / q.norm())
+    b.px = pos.x
+    b.py = pos.y
+    b.pz = pos.z
+    b.vx = vel.x
+    b.vy = vel.y
+    b.vz = vel.z
+    b.qw = q.w
+    b.qx = q.x
+    b.qy = q.y
+    b.qz = q.z
+    b.wx = w.x
+    b.wy = w.y
+    b.wz = w.z
+  }
+}
+
+println("value rigid body, {N} steps")
+println("")
+
+let expected = floats()
+let report = fn (name, dt, got) {
+  let agrees = got == expected ? 'same bits' : "DIFFERS: {got}"
+  println("  {name:<16}{dt / N * 1e9:>8.1f}  ns/step   {agrees}")
+}
+let run_floats = fn (name) {
+  let t0 = Time.monotonic()
+  let got = floats()
+  report(name, Time.monotonic() - t0, got)
+}
+# A value row unrolls every method into its loop, which takes it past the
+# block count `--jit` optimizes at first sight. Called in chunks, it is
+# optimized again once it has been called often enough (run this with
+# CULEBRA_JIT_REOPTIMIZE=wait), so a warm-up on a body of its own comes
+# first and the timed run starts from the optimized code.
+let CHUNK = 50
+let run_value = fn (name, make, advance) {
+  let warm = make()
+  for _ in 0..200 {
+    advance(warm, CHUNK)
+  }
+  let b = make()
+  let t0 = Time.monotonic()
+  for _ in 0..N / CHUNK {
+    advance(b, CHUNK)
+  }
+  advance(b, N % CHUNK)
+  report(name, Time.monotonic() - t0, b.state())
+}
+
+run_floats('floats')
+run_value('V0', Body, v0)
+run_value('V3 fields', Body, v3)
+run_value('V5 hand-flat', FlatBody, v5)
+run_floats('floats (control)')

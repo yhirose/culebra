@@ -670,6 +670,10 @@ struct JitSpecialTable {
   // what lets a consumer outside wrap.h, holding only a JitValue, find the
   // C++ type behind it (each handle's JitWrapped carries it too).
   int64_t foreign_state_fn = -1;
+  // The class declaration that built this meta (culebra_runtime_class_decl_id),
+  // carried across a send; 0 on a meta no declaration built. Op::DeclMatch
+  // reads it: what a compiled site that assumed the declaration checks.
+  uint64_t class_decl = 0;
   // The class's `eq` is `@derive`d, which states no equality: its instances
   // match by their fields, as an enum variant's do — `==` by structure, keys
   // field by field. The derived `eq` fills no slot (_special_closure).
@@ -1435,6 +1439,16 @@ inline JitValue* _ic_own_hit(JitObject* obj, JitPropIC& ic) {
   auto e = _ic_load(ic.own);
   return _ic_matches(e, obj->shape) ? &obj->slots[_ic_slot(e)].value
                                     : nullptr;
+}
+// The own slot `name` names on `obj`, the cache primed with it, or null: the
+// full lookup a miss in `ic` takes.
+inline JitValue* _ic_own_lookup(JitObject* obj, JitKeyName name,
+                                JitPropIC& ic) {
+  if (!obj->shape) return nullptr;
+  auto idx = obj->find_slot(name);
+  if (idx == static_cast<size_t>(-1)) return nullptr;
+  ic.prime_own(obj->shape, idx);
+  return &obj->slots[idx].value;
 }
 inline JitValue* _ic_proto_hit(JitObject* obj, JitPropIC& ic) {
   auto* proto = obj->proto();

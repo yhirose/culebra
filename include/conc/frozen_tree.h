@@ -44,6 +44,7 @@ struct ObjectFacts {
   // dictionary mode, whose keys declare nothing.
   const void* decl = nullptr;
   int8_t dir_kind = 0;      // a class meta's JitSpecialTable::dir_kind
+  uint64_t class_decl = 0;  // a class meta's JitSpecialTable::class_decl
   bool operator==(const ObjectFacts&) const = default;
 };
 

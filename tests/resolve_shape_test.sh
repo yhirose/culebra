@@ -348,6 +348,103 @@ fn f() {
 println(f())' \
 ' ValueBox ' 1
 
+# A field holding a flat @value instance, written with its own arithmetic:
+# the statement compiles a guarded version over the field's fields, which
+# stores them in one step, and the statement as written.
+fields='@value
+class V3 {
+  new(@x: Float, @y: Float, @z: Float) {}
+  __add__(o) { V3(@x + o.x, @y + o.y, @z + o.z) }
+  __mul__(s) { V3(@x * s, @y * s, @z * s) }
+  len() { Math.sqrt(@x * @x + @y * @y + @z * @z) }
+}
+class Body {
+  vel: V3 = V3(0.0, 0.0, 0.0)
+}
+fn step(b: Body, k: Float) {
+  let g = V3(1.0, 2.0, 3.0)
+  b.vel = b.vel + g * k
+  b.vel = b.vel * (1.0 / b.vel.len())
+}
+step(Body(), 0.5)'
+check "a field written with its own arithmetic is guarded" "$fields" \
+' DeclMatch ' 2
+check "the guarded version stores the run" "$fields" \
+' ValueStore ' 2
+# Each guarded version, from its last unbox to the jump past the version as
+# written, calls nothing (len() is called only by the latter).
+printf '%s\n' "$fields" >"$tmp"
+got=$("$BIN" --vm-dump "$tmp" 2>&1 | awk '
+  / ValueUnbox / { on = 1; calls = 0; next }
+  on && / (Call|CallM|CallKw|BMeth) / { calls++ }
+  on && / Jump / { if (calls == 0) clean++; on = 0 }
+  END { print clean + 0 }')
+if [[ "$got" != 2 ]]; then
+  echo "FAIL [the guarded version calls nothing]: $got of 2 call-free" >&2
+  fail=1
+fi
+
+# A guarded statement gives back the slots its runs took: a function's frame
+# does not grow with the number of them.
+slots_of_step() {
+  local body="" i
+  for ((i = 0; i < $1; i++)); do body+=$'  b.vel = b.vel + g * k\n'; done
+  printf '%s\n' '@value
+class V3 {
+  new(@x: Float, @y: Float, @z: Float) {}
+  __add__(o) { V3(@x + o.x, @y + o.y, @z + o.z) }
+  __mul__(s) { V3(@x * s, @y * s, @z * s) }
+}
+class Body {
+  vel: V3 = V3(0.0, 0.0, 0.0)
+}
+fn step(b: Body, k: Float) {
+  let g = V3(1.0, 2.0, 3.0)' "$body" '}
+step(Body(), 0.5)' >"$tmp"
+  "$BIN" --vm-dump "$tmp" 2>&1 |
+    awk '/== fn .*\(arity 2\)/ && !seen { getline; print $3; seen = 1 }'
+}
+one=$(slots_of_step 1)
+twelve=$(slots_of_step 12)
+if [[ -z "$one" || "$one" != "$twelve" ]]; then
+  echo "FAIL [a guarded statement leaves no slot behind]: $one slots for" \
+    "one statement, $twelve for twelve" >&2
+  fail=1
+fi
+
+# The class of a field the function never names is found all the same.
+check "a field's class needs no name in the function" \
+'@value
+class Q {
+  new(@w: Float, @x: Float) {}
+  __mul__(s) { Q(@w * s, @x * s) }
+}
+class Body {
+  q: Q = Q(1.0, 0.0)
+}
+fn step(b: Body) {
+  b.q = b.q * 0.5
+}
+step(Body())' \
+' ValueStore ' 1
+
+# An operand whose read can run the program'"'"'s code leaves the statement as
+# written: the guard would have read the field before that code ran.
+check "a statement that can run code is not guarded" \
+'@value
+class V3 {
+  new(@x: Float) {}
+  __add__(o) { V3(@x + o.x) }
+}
+class Body {
+  vel: V3 = V3(0.0)
+}
+fn step(b: Body, other) {
+  b.vel = b.vel + other
+}
+step(Body(), V3(1.0))' \
+' PropPeek ' 0
+
 # A destructuring statement with a literal on both sides builds no Tuple: the
 # elements go to the targets directly, the last statement of an `if` arm
 # included.

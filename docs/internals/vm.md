@@ -657,11 +657,11 @@ of almost every scope.
 
 ### 5.3 The opcode families
 
-155 opcodes, grouped:
+161 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
-| values | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` `ValueBox` | §5.2; `ReleaseMany` is the fused release ladder the shape pass emits (§5.2.1); `ValueBox` reboxes an unboxed `@value` run (§5.3.4) |
+| values | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` `ValueBox` `PropPeek` `DeclMatch` `ValueUnbox` `ValueStore` | §5.2; `ReleaseMany` is the fused release ladder the shape pass emits (§5.2.1); `ValueBox` reboxes an unboxed `@value` run (§5.3.4); the other four are a field's value read and written as a run (§5.3.6) |
 | arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch, with the arithmetic and comparison ops deciding both-Long and both-numeric inline first (`Neg` its Long and Float arms); `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
 | containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` `ChkNum` | the container absorbs the element's `+1`; `SlotInit` is `ObjectSet` by slot index for a literal whose Shape was pre-built (§5.3.5) |
 | access | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `UfcsTakes` `NsWrChk` `NilChk` | read / write / coalescing-write forms of subscript and property access; `PropVal` is a plain property read that may invoke a getter |
@@ -954,10 +954,10 @@ the reflected method, that method is spliced with `v` as the receiver (an
 overload set declines, as on the left). A class that does not declare it
 may still answer it through a trait's default, which only the run time
 knows, so `k * v` on a class with only `__mul__` keeps the operator. `k` is
-a number when it is a numeric literal, a name whose declaration is one
-(`FnAnalysis::number_declarations`: a `let` of a number declared once, or a
-parameter annotated `Long`, `Float` or `Long | Float`), or arithmetic of
-those (`static_number`). A name is asked by the declaration the resolver
+a number when it is a numeric literal, a name whose declaration is one (a
+`let` of a number declared once, `number_let`, or a parameter annotated
+`Long`, `Float` or `Long | Float`, `FnAnalysis::number_declarations`), or
+arithmetic of those (`static_number`). A name is asked by the declaration the resolver
 gives it, not by the binding in scope where the compile is, so a round that
 decides before a loop body compiles and the body's own compile agree about
 a `let k = ...` the body redeclares. `fold_steps` is the one place a fold is read
@@ -1423,6 +1423,84 @@ is true of the class rather than of an instance: which C++ type it is,
 that its instances cannot be sent to another isolate, and that they have
 no fields to enumerate (so `keys()`, `size()`, spread, JSON and the
 display show none of the bookkeeping that reaches the id table).
+
+### 5.3.6 A field's value read as a run
+
+Everything above unboxes values a local holds. A field holds a box, and a
+read of one is a property read compiled for whatever the field may hold:
+`b.vel = b.vel + g * k` on a `vel: V3` field reads the instance, calls
+`__mul__` and `__add__` through the runtime and allocates twice, every
+step. Nothing in the language says the field holds a `V3` of the
+declaration in scope — it may hold nil, another class of the name, or an
+instance a second compile of the declaration built — so the compiler does
+not assume it. It checks it, per statement, and keeps the statement as
+written for every case the check refuses.
+
+**A statement in two versions.** An assignment whose right-hand side reads
+`recv.field` where the receiver's declared class names the field's class
+(`b: Body` and `vel: V3`, or a member's own `@vel`), and that class lays
+out flat, compiles twice. A guard comes first, one per such field: `PropPeek`
+reads the field as an own data property and nothing else — no getter,
+proto, trait default or error — then `DeclMatch` checks that the instance
+was built by the one declaration the name resolves to where the statement
+is (resolve.h, not a binding in scope: a function need not name `Quat` to
+read a `Quat` field) and holds its fields, and `ValueUnbox` copies them
+into a run. The
+version after the guard reads each field as that run, through the same
+splice machinery a local's run goes through (`field_runs_`, which
+`chain_resolves_to_class`, `try_inline_value_chain` and
+`try_inline_name_chain` answer from). The version every failed check jumps
+to is the statement as written. Which version ran is invisible:
+the two compute the same values and raise the same errors at the same
+positions. The runs the guard and the versions lay out are the statement's
+own, and a scope around them gives their slots back where it ends.
+
+A declaration's identity is an id each compiled program gives it on first
+use (`culebra_runtime_class_decl_id`, from a process-wide counter, into the
+executor's `VmProgram::class_decls` or a lowered module's
+`__vm_class_decl.<k>`): every meta its `ClassMeta` builds carries it
+(`JitSpecialTable::class_decl`), and a send carries it to the meta the
+receiver rebuilds. Every run of one declaration has the same id, which is
+what lets the guard pass an instance a class declared in a function built
+on an earlier call. A declaration compiled again — in another REPL input,
+another program, a baked stdlib module — has another id, and its instances
+take the second version.
+
+**Only a statement that runs no code of the program's.** The guard reads
+every field before the statement starts; the statement as written reads
+each one at its turn. They agree only while nothing between can write a
+field, so the first version is compiled only when it would run nothing of
+the program's own: splices whose arguments are runs a parameter takes or
+numbers, arithmetic on numbers, a run's field reads, `Math` functions
+(`pure_scalar`, `pure_run`, each argument bound as `splice_member_arg` binds
+it, each member body walked with its parameters' kinds). An operand whose
+read can run a getter keeps the statement in one version.
+
+**Writes.** A write `recv.field = e` or `recv.field op= e` takes the first
+version only when the new value is the field's own instance's arithmetic —
+`e`'s run descends from `recv.field` through its own members (`run_lineage`)
+— so its class is the instance's class. `ValueStore` ends that version: it
+stores the run as PropSet stores a value, an instance of the class of the
+instance the field held. When PropSet would only replace that instance — the
+field's slot is a mutable one the site's cache knows, nothing but the field
+and the statement's register holds the instance, and it has no `drop` — the
+instance takes the new fields in place instead, and no instance is made.
+
+**The locals around it.** A local the first version consumes as a run
+(`g` in `b.vel + g * k`) is decided by §5.3.3's whole-scope walk, which
+cannot see field runs on its own. It asks the same question the compile
+asks (`rhs_plan`, `field_write_plan`, through `versioned_rhs_takes`): where
+a statement will compile in two versions, the local's uses in it are the
+first version's, and each bare read of it is marked to be reboxed in the
+second (`materialize_at_`), where compile_expr meets it. The two questions
+are one function each, so they answer alike; were the round's assumptions
+to drop a candidate the answer leaned on, the marks still keep the run from
+escaping. A `let` of a number counts as one from its declaration
+(`number_let`), whether or not it has compiled when a round asks.
+
+`tests/test_value_field_runs.cul` holds what a program sees;
+`tests/resolve_shape_test.sh` holds the guard, the store, and the first
+version calling nothing.
 
 ### 5.4 Built-in methods are a table
 

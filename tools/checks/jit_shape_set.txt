@@ -37,6 +37,7 @@ tests/test_sorted_by_reverse.cul
 tests/test_spread.cul
 tests/test_tensor_nn_graph.cul
 tests/test_transform_error_lines.cul
+tests/test_value_field_runs.cul
 tests/test_value_member_names.cul
 tests/test_value_same_name.cul
 tests/test_wellknown_contract.cul
