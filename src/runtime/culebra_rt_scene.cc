@@ -1853,16 +1853,17 @@ class View {
     loc_lutsize_ = GetShaderLocation(post_, "lutSize");
     loc_lutamount_ = GetShaderLocation(post_, "lutAmount");
     set_post_uniforms();
-    alloc_targets((int)w * ss_, (int)h * ss_);
-    shadowmap0_ = LoadShadowmap(2048, 2048);
-    shadowmap1_ = LoadShadowmap(2048, 2048);
+    // The frame's own targets and the shadow cascades are render_3d's alone,
+    // made by its first frame (sync_targets, make_shadowmaps): a View that only
+    // renders into render_targets never holds them.
     mat_ = LoadMaterialDefault();
     mat_.shader = lit_;
     white_ = mat_.maps[MATERIAL_MAP_DIFFUSE].texture;   // default 1x1 white
     // Carry the cascades on the SPECULAR / NORMAL map slots (shader texture1 /
-    // texture2) so raylib binds them through its working material path.
-    mat_.maps[MATERIAL_MAP_SPECULAR].texture = shadowmap0_.texture;
-    mat_.maps[MATERIAL_MAP_NORMAL].texture = shadowmap1_.texture;
+    // texture2) so raylib binds them through its working material path; white
+    // until they are made, which no cascade's matrix reads before render_3d.
+    mat_.maps[MATERIAL_MAP_SPECULAR].texture = white_;
+    mat_.maps[MATERIAL_MAP_NORMAL].texture = white_;
     depth_mat_ = LoadMaterialDefault();
     depth_mat_.shader = depth_;
     line_mat_ = LoadMaterialDefault();
@@ -1970,8 +1971,7 @@ class View {
   // largest performance knob for a scene-heavy frame.
   void supersample(int64_t n) {
     ss_ = (int)(n < 1 ? 1 : n > kMaxSupersample ? kMaxSupersample : n);
-    set_aa_uniform();
-    sync_targets();
+    set_aa_uniform();   // the next render_3d re-fits its targets (sync_targets)
   }
   // Near / far clip planes of the 3D pass (metres). The near plane is far out
   // by default: depth precision is what keeps coplanar road layers from
@@ -2639,6 +2639,7 @@ class View {
   void render_3d() {
     close_stray_canvas("render_3d");
     sync_targets();
+    make_shadowmaps();
     Matrix id = MatrixIdentity();
     Vector3 focus = cam_.target;
 
@@ -2932,14 +2933,24 @@ class View {
     post_rt_ = LoadRenderTexture(w, h);
     SetTextureFilter(post_rt_.texture, TEXTURE_FILTER_BILINEAR);   // averages on downscale
   }
-  // Re-fit the targets when the window (or ss_) has changed since they were
-  // made — the frame after a resize or a fullscreen toggle.
+  // Make the targets on render_3d's first frame, and re-fit them when the
+  // window (or ss_) has changed since they were made — the frame after a
+  // resize or a fullscreen toggle.
   void sync_targets() {
     int w = GetScreenWidth() * ss_, h = GetScreenHeight() * ss_;
     if (w == scene_rt_.texture.width && h == scene_rt_.texture.height) return;
     UnloadRenderTexture(scene_rt_);
     UnloadRenderTexture(post_rt_);
     alloc_targets(w, h);
+  }
+  // The two cascades, made once by render_3d's first frame: only its shadow
+  // passes draw them, and render_to reads the ones the last render_3d fitted.
+  void make_shadowmaps() {
+    if (shadowmap0_.id) return;
+    shadowmap0_ = LoadShadowmap(2048, 2048);
+    shadowmap1_ = LoadShadowmap(2048, 2048);
+    mat_.maps[MATERIAL_MAP_SPECULAR].texture = shadowmap0_.texture;
+    mat_.maps[MATERIAL_MAP_NORMAL].texture = shadowmap1_.texture;
   }
   void set_aa_uniform() {
     float aa = (float)ss_;

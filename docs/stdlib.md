@@ -6668,6 +6668,9 @@ larger target costs `n²` times the memory and one more pass per `render_to`.
 Mip levels are chosen as at the output size, so a mipmapped texture reads the
 same at any `n` and only the edges are smoothed. A `supersample` outside 1 to 4,
 or a size that cannot be allocated, is a `ValueError`.
+The window's own targets (at `view.supersample(n)`) and the two 2048 × 2048
+shadow cascades are made by the first `render_3d()`: a view that draws only
+through `render_to` holds none of them.
 
 ```culebra
 # doctest: skip
