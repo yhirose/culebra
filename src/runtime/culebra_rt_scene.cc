@@ -674,6 +674,9 @@ static uint64_t& gl_epoch() {
 
 // The most vertices a mesh holds: raylib's mesh indices are 16-bit.
 constexpr int kMeshMaxVertices = 65535;
+// What an indexed mesh's `indices` points at once its indices are on the GPU
+// (Node::adopt): never read nor written, only told apart from null.
+static unsigned short kIndexed = 0;
 
 // A mesh loaded without normals or UVs reads them from one buffer of
 // up-facing normals and one of zero UVs, long enough for the largest mesh and
@@ -1465,9 +1468,9 @@ class Node : public std::enable_shared_from_this<Node> {
       }
     }
     // Upload straight from the node's own vectors; UploadMesh reads them once
-    // and they are freed below. Indices are the exception — DrawMesh reads
-    // that pointer as its draw-indexed flag, so that one array stays raylib's.
-    // The Mesh then keeps GL ids plus two plain-heap arrays, so a node can
+    // and they are freed below, the indices too: DrawMesh reads that pointer
+    // only as its draw-indexed flag, so adopt() leaves a marker in its place.
+    // The Mesh then keeps GL ids plus the plain-heap vboId array, so a node can
     // outlive its window (see unload_mesh). No Model: render() draws the Mesh.
     // (GL33-only: the GL 1.1 draw path reads mesh.vertices per frame — moot
     // while the lit shader is #version 330.)
@@ -1482,8 +1485,8 @@ class Node : public std::enable_shared_from_this<Node> {
     if (!mn.empty()) m.normals = mn.data();
     if (!mt.empty()) m.texcoords = mt.data();
     if (has_color_) m.colors = mc.data();   // else raylib feeds white
-    m.indices = (unsigned short*)MemAlloc((unsigned)(mi.size() * sizeof(unsigned short)));
-    for (size_t i = 0; i < mi.size(); i++) m.indices[i] = (unsigned short)mi[i];
+    std::vector<unsigned short> idx(mi.begin(), mi.end());   // range-checked above
+    m.indices = idx.data();
     UploadMesh(&m, false);
     share_absent(m, mn.empty(), mt.empty());
     adopt(m, mv);
@@ -1698,12 +1701,16 @@ class Node : public std::enable_shared_from_this<Node> {
 
   // Take a just-uploaded mesh as this node's, replacing an earlier upload,
   // bounded by the xyz it was built from. raylib's pointers into our arrays
-  // are cleared: the vertex data was never raylib's to free (unload_mesh).
+  // are cleared: the data was never raylib's to free (unload_mesh). The
+  // indices live in the VAO's element buffer, and GL 3.3's DrawMesh reads
+  // `indices` only as whether to draw by them, so an indexed mesh points at
+  // kIndexed instead of keeping a copy.
   void adopt(::Mesh m, const std::vector<float>& xyz) {
     m.vertices = nullptr;
     m.normals = nullptr;
     m.texcoords = nullptr;
     m.colors = nullptr;
+    m.indices = m.indices ? &kIndexed : nullptr;
     float r2 = 0;
     for (size_t i = 0; i + 2 < xyz.size(); i += 3)
       r2 = std::max(r2, xyz[i] * xyz[i] + xyz[i + 1] * xyz[i + 1] + xyz[i + 2] * xyz[i + 2]);
@@ -1723,16 +1730,17 @@ class Node : public std::enable_shared_from_this<Node> {
 
   // Only the GL ids need the window — and only the context that made them, or
   // the delete lands on whatever the new one has since given those ids to. The
-  // vboId and index arrays are plain heap and are reclaimed either way — the
-  // same split ~View makes for a material's maps. The vertex data was never
-  // raylib's (build() uploads from this node's own vectors), so a node
+  // vboId array is plain heap and is reclaimed either way — the same split
+  // ~View makes for a material's maps. No data was ever raylib's (build()
+  // uploads from this node's own vectors, adopt() leaves kIndexed), so a node
   // outliving its View leaks nothing.
   void unload_mesh() {
+    assert(mesh_.indices == nullptr || mesh_.indices == &kIndexed);
+    mesh_.indices = nullptr;   // the marker is not raylib's to free
     if (mesh_live() && IsWindowReady()) {
       UnloadMesh(mesh_);
     } else {
       MemFree(mesh_.vboId);
-      MemFree(mesh_.indices);
     }
     mesh_ = ::Mesh{};
     mesh_built = false;
