@@ -715,6 +715,53 @@ println("dark pixels: point {square}, point_majority {round}")
 println("majority rounds the texel: {square > 100 && share > 0.5 && share < 0.72}")
 EOF
 
+# The stripes of scene_pmip below as a detail texture, over a grey 128 one at
+# full strength, so a pixel is the stripe's black or white as it is read:
+# the detail is sampled as its own filter says, so point_majority keeps the
+# magnified texels pure where trilinear blends their edges, and both average
+# far off.
+cat > scene_dmaj.cul <<'EOF'
+let view = Scene.View.new(160, 120, "scene dmaj")
+view.background(20, 24, 30)
+view.post_process(false)
+let img = Scene.Image.new(64, 64)
+for y in 0..64 {
+  for x in 0..64 {
+    if x % 2 == 0 { img.pixel(x, y, 0, 0, 0) } else { img.pixel(x, y, 255, 255, 255) }
+  }
+}
+let tex = view.texture(img, false, true)
+let grey = view.texture(Scene.Image.new(4, 4).fill(128, 128, 128), false, true)
+# a 1 m texel, as in scene_pmip
+let mat = view.add_material().texture(grey).detail(tex, 62.5, 62.5).unlit()
+view.add_plane(4000.0, 4000.0).material(mat)
+view.camera(0.0, 3.0, 0.0, 0.0, 0.0, 20.0, 0.0, 1.0, 0.0, 60.0)
+Canvas.init(160, 120)
+# pure (black or white) pixels in a near row and a far one, the detail
+# drawn with `mode`
+fn pure_in_rows(mode) {
+  tex.filter(mode)
+  view.render_3d()
+  view.screenshot("dmaj_{mode}.png")
+  view.present()
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read("dmaj_{mode}.png")).draw(0, 0)
+  fn pure(y) {
+    mut n = 0
+    for x in 0..160 {
+      let r = Canvas.get_pixel(x, y) & 255
+      if r <= 40 || r >= 215 { n += 1 }
+    }
+    n
+  }
+  (pure(119), pure(55))
+}
+let (tri_near, tri_far) = pure_in_rows("trilinear")
+let (pj_near, pj_far) = pure_in_rows("point_majority")
+println("near: trilinear {tri_near}, point_majority {pj_near}; far: {tri_far}, {pj_far}")
+println("a detail texture's majority keeps near texels pure and averages far: {pj_near == 160 && pj_far == 0 && tri_near < 160}")
+EOF
+
 cat > scene_pmip.cul <<'EOF'
 let view = Scene.View.new(160, 120, "scene pmip")
 view.background(20, 24, 30)
@@ -1757,6 +1804,7 @@ run_pair pmip "near stays sharp: true" "far is averaged: true" \
   "coverage greys only the edges: true" "unknown name keeps the last filter: true"
 echo "OK: point_mipmap keeps near texels sharp and averages far ones; point_coverage greys only their edges"
 run_pair pmaj "majority rounds the texel: true"
+run_pair dmaj "a detail texture's majority keeps near texels pure and averages far: true"
 run_pair cutrt "a kept cutout is opaque in a target: true"
 echo "OK: a cutout drawn into a render target covers its pixels whole"
 echo "OK: point_majority draws a lone magnified texel round, not square"

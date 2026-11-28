@@ -182,6 +182,7 @@ uniform float normalStrength;   // 0 = no normal map
 uniform sampler2D detailMap;
 uniform float detailStrength;   // 0 = no detail texture
 uniform float detailMasked;     // 1: texture0's alpha is the detail's strength, not coverage
+uniform float detailFilter;     // detailMap sampled here, as texelFilter says of texture0
 uniform float lodBias;          // log2 of a supersampled pass's factor, else 0
 uniform float texelFilter;      // texture0 sampled here: 1 "point_coverage", 2 "point_majority"
 uniform mat4 lightVP0;
@@ -231,13 +232,13 @@ float pcf(sampler2D sm, vec3 proj, float bias) {
 // "point_coverage" at one mip level: inside a texel its colour as is, across
 // an edge a ramp one pixel (`span`, in uv) wide, so each side counts by the
 // share of the pixel it covers. A pixel wider than a texel reads bilinear.
-vec4 coverLevel(vec2 uv, float level, vec2 span) {
-  vec2 size = vec2(textureSize(texture0, int(level)));
+vec4 coverLevel(sampler2D s, vec2 uv, float level, vec2 span) {
+  vec2 size = vec2(textureSize(s, int(level)));
   vec2 p = uv * size;
   vec2 w = max(min(span * size, vec2(1.0)), vec2(1e-6));
   vec2 edge = floor(p + 0.5);
   p = edge + clamp((p - edge) / w, -0.5, 0.5);
-  return textureLod(texture0, p / size, level);
+  return textureLod(s, p / size, level);
 }
 // "point_majority" magnified: of the four texels bilinear filtering blends,
 // the colour whose texels hold the most of its weight (the first of a tie).
@@ -245,14 +246,14 @@ vec4 coverLevel(vec2 uv, float level, vec2 span) {
 // weight crosses its neighbour's, a curve through the texel corners rather
 // than their square edges.
 bool sameTexel(vec4 a, vec4 b) { return all(lessThan(abs(a - b), vec4(0.5 / 255.0))); }
-vec4 majority(vec2 uv) {
-  vec2 size = vec2(textureSize(texture0, 0));
+vec4 majority(sampler2D s, vec2 uv) {
+  vec2 size = vec2(textureSize(s, 0));
   vec2 p = uv * size - 0.5;
   vec2 i = floor(p), f = p - i;
-  vec4 c[4] = vec4[4](textureLod(texture0, (i + vec2(0.5, 0.5)) / size, 0.0),
-                      textureLod(texture0, (i + vec2(1.5, 0.5)) / size, 0.0),
-                      textureLod(texture0, (i + vec2(0.5, 1.5)) / size, 0.0),
-                      textureLod(texture0, (i + vec2(1.5, 1.5)) / size, 0.0));
+  vec4 c[4] = vec4[4](textureLod(s, (i + vec2(0.5, 0.5)) / size, 0.0),
+                      textureLod(s, (i + vec2(1.5, 0.5)) / size, 0.0),
+                      textureLod(s, (i + vec2(0.5, 1.5)) / size, 0.0),
+                      textureLod(s, (i + vec2(1.5, 1.5)) / size, 0.0));
   float w[4] = float[4]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y),
                         (1.0 - f.x) * f.y, f.x * f.y);
   int best = 0;
@@ -267,22 +268,23 @@ vec4 majority(vec2 uv) {
 // The levels the hardware would pick (lodBias included), each read by
 // coverLevel and blended as trilinear blends them. "point_majority" reads
 // the majority where a texel spans two pixels or more, point_coverage where
-// it spans one or fewer, and blends the two between.
-vec4 baseColor(vec2 uv) {
-  if (texelFilter < 0.5) return texture(texture0, uv, lodBias);
+// it spans one or fewer, and blends the two between. `s` is sampled as
+// `mode` says (texelFilter's values): texture0 and the detail texture alike.
+vec4 filtered(sampler2D s, vec2 uv, float mode) {
+  if (mode < 0.5) return texture(s, uv, lodBias);
   vec2 dx = dFdx(uv), dy = dFdy(uv);
-  vec2 size0 = vec2(textureSize(texture0, 0));
+  vec2 size0 = vec2(textureSize(s, 0));
   float rho = max(length(dx * size0), length(dy * size0));
   float top = floor(log2(max(size0.x, size0.y)));
   float lod = clamp(log2(max(rho, 1e-8)) + lodBias, 0.0, top);
   float l0 = floor(lod);
   vec2 span = abs(dx) + abs(dy);
-  vec4 c = coverLevel(uv, l0, span);
+  vec4 c = coverLevel(s, uv, l0, span);
   float t = lod - l0;
-  if (t > 0.0) c = mix(c, coverLevel(uv, l0 + 1.0, span), t);
-  if (texelFilter < 1.5) return c;
+  if (t > 0.0) c = mix(c, coverLevel(s, uv, l0 + 1.0, span), t);
+  if (mode < 1.5) return c;
   float near = log2(max(rho, 1e-8)) + lodBias;
-  return near >= 0.0 ? c : mix(majority(uv), c, smoothstep(-1.0, 0.0, near));
+  return near >= 0.0 ? c : mix(majority(s, uv), c, smoothstep(-1.0, 0.0, near));
 }
 // The 4x4 ordered-dither thresholds (Bayer): each 2x2 block holds an even
 // spread too, so a 2x resolve averages four levels and a 4x one all sixteen.
@@ -301,13 +303,13 @@ void main() {
   }
   // texture0 defaults to a 1x1 white texture, so untextured shapes are
   // unaffected (white * colour). A material can swap in a real texture.
-  vec4 tex = baseColor(fragUV);
+  vec4 tex = filtered(texture0, fragUV, texelFilter);
   float cover = opacity * (detailMasked > 0.5 ? 1.0 : tex.a);
   // Added about grey 128, so a pattern averaging it — as its far mip levels
   // do — leaves the colour's mean alone.
   if (detailStrength != 0.0) {
     float k = detailStrength * (detailMasked > 0.5 ? tex.a : 1.0);
-    vec3 d = texture(detailMap, fragDetailUV, lodBias).rgb - 128.0 / 255.0;
+    vec3 d = filtered(detailMap, fragDetailUV, detailFilter).rgb - 128.0 / 255.0;
     tex.rgb = clamp(tex.rgb + d * k, 0.0, 1.0);
   }
   if (cutoff > 0.0 && cover < cutoff) discard;
@@ -756,7 +758,8 @@ class Texture : public std::enable_shared_from_this<Texture> {
   // transform (emit) and a sprite's source rectangle. One flag, every reader.
   bool flip_v = false;
   // filter("point_coverage") (1) and filter("point_majority") (2): the lit
-  // shader samples texture0 itself (texelFilter), on linear sampling.
+  // shader samples the texture itself (texelFilter as texture0, detailFilter
+  // as a detail texture), on linear sampling.
   int texel_filter = 0;
   uint64_t epoch = gl_epoch();
   // A UV transform (scale.xy, offset.zw) that reads this texture upright:
@@ -1847,6 +1850,7 @@ class View {
     loc_detail_uv_ = GetShaderLocation(lit_, "detailXform");
     loc_detail_k_ = GetShaderLocation(lit_, "detailStrength");
     loc_detail_masked_ = GetShaderLocation(lit_, "detailMasked");
+    loc_detail_filter_ = GetShaderLocation(lit_, "detailFilter");
     sky_top_ = Color{135, 165, 205, 255};   // default reflected sky until sky() is called
     sky_bot_ = Color{182, 202, 224, 255};
     set_sky_uniform();
@@ -2517,17 +2521,19 @@ class View {
     mat_.maps[MATERIAL_MAP_ROUGHNESS].texture = nm ? m->normal->tex : white_;
     SetShaderValue(lit_, loc_nstrength_, &nstrength, SHADER_UNIFORM_FLOAT);
     Texture2D dtex = white_;
-    float dstrength = 0.0f, dmasked = 0.0f;
+    float dstrength = 0.0f, dmasked = 0.0f, dfilter = 0.0f;
     Vector4 duv{1, 1, 0, 0};
     if (m && m->detail_tex && m->detail_tex->live()) {
       dtex = m->detail_tex->tex;
       dstrength = m->detail_strength;
       dmasked = m->detail_masked ? 1.0f : 0.0f;
+      dfilter = float(m->detail_tex->texel_filter);
       duv = m->detail_tex->upright(m->detail_uv);
     }
     mat_.maps[MATERIAL_MAP_OCCLUSION].texture = dtex;
     SetShaderValue(lit_, loc_detail_k_, &dstrength, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_detail_masked_, &dmasked, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(lit_, loc_detail_filter_, &dfilter, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_detail_uv_, &duv, SHADER_UNIFORM_VEC4);
     SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_rough_, &roughness, SHADER_UNIFORM_FLOAT);
@@ -3067,7 +3073,7 @@ class View {
   int loc_metallic_ = 0, loc_rough_ = 0;
   int loc_cutoff_ = 0, loc_fade_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_texfilter_ = 0;
   int loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
-  int loc_detail_uv_ = 0, loc_detail_k_ = 0, loc_detail_masked_ = 0;
+  int loc_detail_uv_ = 0, loc_detail_k_ = 0, loc_detail_masked_ = 0, loc_detail_filter_ = 0;
   bool culling_ = true;
   std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
   Vector3 dir_ = Vector3{0.4f, -0.8f, -0.48f};   // unit length, like sun() stores

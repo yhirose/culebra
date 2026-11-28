@@ -6577,8 +6577,9 @@ of its channels moves the colour up where it is above 128 and down where it is
 below, by its distance from 128 times `strength`, so grey 128 leaves the colour
 alone. It is mixed into the texture's colour before anything else reads it, so
 it works on an `unlit()` surface too. It has its own `Texture`, so its own
-`filter` and mipmaps: a pattern averaging 128, mipmapped, fades into its far
-levels' grey and leaves the colour's mean as it was from afar. With `masked`,
+`filter` and mipmaps, `"point_coverage"` and `"point_majority"` included: a
+pattern averaging 128, mipmapped, fades into its far levels' grey and leaves
+the colour's mean as it was from afar. With `masked`,
 the texture's alpha is how much of the detail a pixel takes — 255 all of it,
 0 none, the water of a ground image and not its land — and no longer its
 coverage: the surface is as opaque as its opacity, and `cutout` reads that alone.
