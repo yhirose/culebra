@@ -548,6 +548,26 @@ inline constexpr Special reflected_special(Special s) {
 }
 static_assert(reflected_special(Special::Sub) == Special::RSub &&
               reflected_special(Special::Matmul) == Special::RMatmul);
+// Who answers the arithmetic `a OP b` (`s` one of `Add`..`Matmul`), in the
+// order asked: `a.__op__(b)`, the reflected `b.__rop__(a)`, and for the
+// commutative `+` and `*` `b.__op__(a)` (auto-reflection). The first that
+// is there answers. The boxed dispatch asks in this order, and the compiler
+// reads it to splice what a number's right operand answers.
+struct ArithAsk {
+  bool right;  // the right operand's method, the left operand its argument
+  Special method;
+};
+struct ArithAsks {
+  ArithAsk at[3];
+  size_t size;
+  constexpr const ArithAsk* begin() const { return at; }
+  constexpr const ArithAsk* end() const { return at + size; }
+};
+inline constexpr ArithAsks arith_asks(Special s) {
+  const bool commutes = s == Special::Add || s == Special::Mul;
+  return {{{false, s}, {true, reflected_special(s)}, {true, s}},
+          commutes ? size_t{3} : size_t{2}};
+}
 // The specials that answer one question with `s`, as a bit per Special:
 // equality and the hash that must agree with it, and order. A class with a
 // member of any of them answers that question itself, so none of them is

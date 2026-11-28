@@ -2184,22 +2184,18 @@ inline std::optional<std::string> _try_str_special(int8_t type, int64_t data) {
 }
 
 // Arithmetic binop `lhs OP rhs` (`s` one of `Add`..`Matmul`) through the
-// operands' methods, the first that is there: `lhs.__op__(rhs)`, the
-// reflected `rhs.__rop__(lhs)`, and for the commutative `+` and `*`
-// `rhs.__op__(lhs)` (auto-reflection). A method is picked by its name, so
-// one that does not take the other operand raises (its parameter's
-// TypeError, or DispatchError among overloads) rather than passing on.
-// Callers fall back to the numeric path otherwise.
+// operands' methods, the first that is there, in arith_asks' order. A
+// method is picked by its name, so one that does not take the other
+// operand raises (its parameter's TypeError, or DispatchError among
+// overloads) rather than passing on. Callers fall back to the numeric path
+// otherwise.
 inline std::optional<JitValue> _dispatch_arith_special(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, Special s, int64_t line,
     int64_t col) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, s, line, col)) return r;
-  if (auto r = _try_special_binop(rt, rd, lt, ld, reflected_special(s), line,
-                                  col))
-    return r;
-  if (s == Special::Add || s == Special::Mul) {
-    if (auto r = _try_special_binop(rt, rd, lt, ld, s, line, col)) return r;
-  }
+  for (auto [right, m] : arith_asks(s))
+    if (auto r = right ? _try_special_binop(rt, rd, lt, ld, m, line, col)
+                       : _try_special_binop(lt, ld, rt, rd, m, line, col))
+      return r;
   return std::nullopt;
 }
 

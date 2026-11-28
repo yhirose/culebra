@@ -946,10 +946,11 @@ one instance, one splice, still no object built. The left operand's own
 dunder is the one the boxed dispatch reaches first, so an operand[0]
 proven a run reaches exactly that method.
 
-A number on the left (`k * v`) has no operator methods, so the boxed
-dispatch asks `v`'s reflected one, `v.__rmul__(k)`, and for `+` and `*`
-with none, `v`'s own, `v.__mul__(k)`. When `k` is known to be a number,
-that dunder is the one spliced, with `v` as the receiver: a numeric
+A number on the left (`k * v`) has no operator methods, so of the methods
+the boxed dispatch asks, in the runtime's order (`arith_asks`), the first
+`v` has answers: `v.__rmul__(k)`, and for `+` and `*` with none, `v`'s own,
+`v.__mul__(k)`. The compiler reads the same order. When `k` is known to be
+a number, that dunder is the one spliced, with `v` as the receiver: a numeric
 literal, a name whose every read is one (`Binding::number`: written once,
 in the frame's own slot, by a number or as a parameter annotated `Long`,
 `Float` or `Long | Float`), or arithmetic of those (`static_number`). A
@@ -958,7 +959,8 @@ run time keeps the operator. `fold_steps` is the one place a fold is read
 as a head and its steps (each a dunder and its operand): `k op v ...`
 reads as head `v`, first step the reflected dunder with `k`, and every
 lookahead, walk and emitter of a fold takes the fold from there. `k` is
-evaluated after `v` then, which no number can observe.
+evaluated after `v` then, which is not observable only because `v` is a
+bare name, whose read has no effect (`k` may throw: `1 / 0`).
 
 An operator fold (`ADDITIVE`/`MULTIPLICATIVE`, and `UNARY_MINUS` sized down
 to one operand) decides before compiling anything, not operand by operand:
