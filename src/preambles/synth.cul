@@ -234,7 +234,8 @@ let _synth_module = fn () {
     # By a number, a gain of its inverse; by a signal, 0 where it is 0.
     __div__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
       let s = self._signal()
-      __raise("ValueError", "Synth: a part divided by 0") if channels_or_one(other).any(|c| is_number(c) && c == 0)
+      let zero = is_number(other) ? other == 0 : other is Array && other.any(|c| is_number(c) && c == 0)
+      __raise("ValueError", "Synth: a part divided by 0") if zero
       is_number(other) ? s * (1.0 / other) : node("divide", [s], {by: other}, {})
     }
     # `other / self`, 0 where the signal is 0.
@@ -827,7 +828,8 @@ let _synth_module = fn () {
         q
       },
       "compare" => {
-        let q = o.kind == "above" ? g.above(input, base_of(v.than, 0.0)) : g.below(input, base_of(v.than, 0.0))
+        let than = base_of(v.than, 0.0)
+        let q = o.kind == "above" ? g.above(input, than) : g.below(input, than)
         feed(b, p, q.than, v.than, 0.0)
         q
       },
@@ -899,11 +901,12 @@ let _synth_module = fn () {
   # filter's `cutoff / q` wide at its lowest cutoff (never, at 0; one a
   # signal moves adds none: the input's end decides), and a lag and a decay
   # for their time; a size, a rounding, a quotient, and a clip that holds 0,
-  # end with their input, a comparison with the later of its two, a select
-  # with the later of its a and b, an exp and a log never, and a latch two periods after it when an impulse at a fixed
-  # freq triggers it, never otherwise; an impulse and a dust end when their
-  # freq or density is 0; a room rings on 60 dB past its input, as long as
-  # its longest comb does at its largest size. A gated envelope ends once it
+  # end with their input, and a latch two periods after it when an impulse
+  # at a fixed freq triggers it, never otherwise; a comparison and a select
+  # end with the later of their two, and an exp and a log never; an impulse
+  # and a dust end when their freq or density is 0; a room rings on 60 dB
+  # past its input, as long as its longest comb does at its largest size.
+  # A gated envelope ends once it
   # is let go, `held` seconds from its start, and never while it is held.
   fn ending(expr, held = nil) {
     let known = {}

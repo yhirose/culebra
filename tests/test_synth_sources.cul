@@ -206,7 +206,7 @@ fn sample_and_hold(xs, trigger) {
   let xs = at_rate(x, 0.05)
   let over = (x.abs().log() * (20.0 / Math.log(10.0)) + 12.0).clip(0.0, 200.0)
   let compressed = x * db(over * -0.75)
-  let gain_of = |v| Math.exp(Math.log(10.0) * Math.clamp(Math.log(Math.max(Math.abs(v), 1e-12)) * (20.0 / Math.log(10.0)) + 12.0, 0.0, 200.0) * -0.75 / 20.0)
+  let gain_of = |v| db(Math.clamp(Math.log(Math.max(Math.abs(v), 1e-12)) * (20.0 / Math.log(10.0)) + 12.0, 0.0, 200.0) * -0.75)
   assert_samples(at_rate(compressed, 0.05), xs.map(|v| v * gain_of(v)))
   assert_samples(at_rate(x * x.abs().gt(0.3), 0.05), xs.map(|v| Math.abs(v) > 0.3 ? v : 0.0))
 }

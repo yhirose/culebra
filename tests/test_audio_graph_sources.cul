@@ -243,6 +243,7 @@ fn sample_and_hold(xs, trigger) {
 {
   let other = |g| g.wave("sine", freq: 30.0)
   let o = render(other, 0.1)
+  assert_eq(o[0], 0.0)
   let against = |make| render(fn (g) {
     let p = make(g)
     other(g).connect(p.by ?? p.than ?? p.a)
@@ -250,7 +251,6 @@ fn sample_and_hold(xs, trigger) {
   }, 0.1)
   assert_samples(render(|g| g.log(sine(g)), 0.1), s.map(|x| Math.log(Math.max(x, 1e-12))))
   assert_samples(against(|g| g.divide(sine(g), 0.0)), iota(s.size()).map(|i| o[i] == 0.0 ? 0.0 : s[i] / o[i]))
-  assert_eq(o[0], 0.0)
   assert_samples(against(|g| g.above(sine(g), 0.0)), iota(s.size()).map(|i| s[i] > o[i] ? 1.0 : 0.0))
   assert_samples(against(|g| g.below(sine(g), 0.0)), iota(s.size()).map(|i| s[i] < o[i] ? 1.0 : 0.0))
   assert_samples(against(|g| g.select(sine(g), 0.0, 0.25)), iota(s.size()).map(|i| s[i] > 0 ? o[i] : 0.25))

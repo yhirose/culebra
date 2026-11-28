@@ -426,13 +426,14 @@ let _audio_module = fn () {
     }
     # 1 where what comes in is above `than`, 0 where it is not.
     above(input: AudioGraphPart, than: Long | Float = 0.0) {
-      let p = @_part("pair", "above", [input], [than])
-      p.than = @_value(p, 0)
-      p
+      @_compare("above", input, than)
     }
     # 1 where what comes in is below `than`, 0 where it is not.
     below(input: AudioGraphPart, than: Long | Float = 0.0) {
-      let p = @_part("pair", "below", [input], [than])
+      @_compare("below", input, than)
+    }
+    _compare(kind, input, than) {
+      let p = @_part("pair", kind, [input], [than])
       p.than = @_value(p, 0)
       p
     }
