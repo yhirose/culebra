@@ -183,6 +183,66 @@ fn f(n) {
 }' \
 ' (ValueBox|Call|CallM|Add|Mul) .*; 1[0-3]:' 0
 
+# A number on the left (`k * v`) splices `v`'s reflected dunder: a
+# literal, a `let` of one, arithmetic of those, a parameter annotated as one.
+reflected='@value
+class V2 {
+  x: Float
+  new(@x) {}
+  __add__(o) { V2(self.x + o.x) }
+  __mul__(k) { V2(self.x * k) }
+  __rmul__(k) { V2(self.x * k) }
+}
+fn f(n, h: Float) {
+  let dt = 0.5
+  let half = dt * 0.5
+  mut p = V2(1.0)
+  let v = V2(0.5)
+  for _ in 0..n { p = p + dt * v + 2 * v + half * v + h * v }
+  p.x
+}'
+check "a number times a run splices the reflected dunder" "$reflected" \
+  ' (ValueBox|Call|CallM|Add|Mul) .*; 1[3-6]:' 0
+# ...and a number the compiler cannot count on (a `mut`) keeps the
+# operator, dispatched at run time.
+check "a mut number times a run stays boxed" \
+'@value
+class V2 {
+  x: Float
+  new(@x) {}
+  __add__(o) { V2(self.x + o.x) }
+  __rmul__(k) { V2(self.x * k) }
+}
+fn f(n) {
+  mut k = 0.5
+  mut p = V2(1.0)
+  let v = V2(0.5)
+  for _ in 0..n { p = p + k * v }
+  p.x
+}' \
+' Mul .*; 12:' 1
+
+# A `let` in a loop body that consumes a run of the enclosing list is
+# decided with it, so neither is boxed.
+check "a nested let consuming an outer run stays unboxed" \
+'@value
+class V2 {
+  x: Float
+  new(@x) {}
+  __add__(o) { V2(self.x + o.x) }
+  __mul__(k) { V2(self.x * k) }
+}
+fn f(n) {
+  mut p = V2(1.0)
+  let v = V2(0.5)
+  for _ in 0..n {
+    let d = v * 0.5
+    p = p + d
+  }
+  p.x
+}' \
+' (ValueBox|Call|CallM|Add|Mul) .*; 1[1-4]:' 0
+
 # A typed field whose annotation names a class with typed fields reads
 # those fields typed down the chain, as through a `let`.
 check "a typed field's class follows a chain" \

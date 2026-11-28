@@ -944,9 +944,21 @@ classes, `Op::Add`/`Sub`/`Mul`/`Div`/`Mod`/`MatMul`/`Neg` splice the
 dunder the same way a `.method()` step in §5.3.1's chain does — one class,
 one instance, one splice, still no object built. The left operand's own
 dunder is the one the boxed dispatch reaches first, so an operand[0]
-proven a run reaches exactly that method. A reflected `k * v` is not
-spliced: whether `v.__rmul__`, `v.__mul__` or something else answers it
-depends on what `k` is at run time, which nothing here knows.
+proven a run reaches exactly that method.
+
+A number on the left (`k * v`) has no operator methods, so the boxed
+dispatch asks `v`'s reflected one, `v.__rmul__(k)`, and for `+` and `*`
+with none, `v`'s own, `v.__mul__(k)`. When `k` is known to be a number,
+that dunder is the one spliced, with `v` as the receiver: a numeric
+literal, a name whose every read is one (`Binding::number`: written once,
+in the frame's own slot, by a number or as a parameter annotated `Long`,
+`Float` or `Long | Float`), or arithmetic of those (`static_number`). A
+`mut`, a name a closure captures, or anything whose type is a question for
+run time keeps the operator. `fold_steps` is the one place a fold is read
+as a head and its steps (each a dunder and its operand): `k op v ...`
+reads as head `v`, first step the reflected dunder with `k`, and every
+lookahead, walk and emitter of a fold takes the fold from there. `k` is
+evaluated after `v` then, which no number can observe.
 
 An operator fold (`ADDITIVE`/`MULTIPLICATIVE`, and `UNARY_MINUS` sized down
 to one operand) decides before compiling anything, not operand by operand:
@@ -1103,9 +1115,11 @@ candidate's own declaration, so one that leaned on a candidate since
 dropped drops with it. An operand that is itself an operator over another
 run of the class (`w2 / k @ name`) is a run the spliced parameter takes
 when every occurrence of `name` inside it is (`is_run_of_name`).
-Statement lists nested in the scope (a loop body) are decided later than
-the scope's own, so a `let` there does not count as a consumer of a run
-the scope is deciding. A
+The candidates of the statement lists nested in the scope's later
+statements (a loop body's `let d = v * DT`) join the round too, so a run a
+nested `let` consumes is decided together with that `let`; a nested
+candidate whose name also means another binding the round walks is left
+for its own list's round. A
 plain `let` is the degenerate single-assignment case: the walk refuses to
 classify any write to it, so a later `v = …` — an ImmutableError today —
 declines the binding and the ordinary path keeps the identical error.

@@ -138,3 +138,131 @@ assert_eq(nil_chain, nil_let)
 s.pos = V2(1.5, 2.5)
 assert_eq(read_chain(s), 4.0)
 assert_eq(read_let(s), 4.0)
+
+# --- a number on the left: `k * v` is `v`'s reflected dunder ---
+
+# `__rmul__` answers rather than `__mul__` (they differ here, so the wrong
+# one shows), `__rsub__` answers `k - v`, and with no reflected dunder `+`
+# and `*` fall back to `v`'s own, as the boxed dispatch does. `k` is a
+# literal, a `let` of one, arithmetic of those, or a parameter annotated as
+# a number.
+@value
+class R {
+  x: Float
+  new(@x) {}
+  __add__(o) { R(self.x + o.x) }
+  __mul__(k) { R(self.x * k) }
+  __rmul__(k) { R(self.x * k + 1.0) }
+  __rsub__(k) { R(k - self.x) }
+}
+@value
+class C {
+  x: Float
+  new(@x) {}
+  __add__(o) { C(self.x + o.x) }
+  __mul__(k) { C(self.x * k) }
+}
+fn reflected(n, h: Float) {
+  let dt = 0.5
+  let half = dt * 0.5
+  mut p = R(0.0)
+  let v = R(2.0)
+  for _ in 0..n {
+    p = p + dt * v + 2 * v + half * v + h * v + (1.0 - v)
+  }
+  p.x
+}
+assert_eq(reflected(2, 0.25),
+          2.0 * ((2.0 * 0.5 + 1.0) + (2.0 * 2.0 + 1.0) + (2.0 * 0.25 + 1.0) +
+                 (2.0 * 0.25 + 1.0) + (1.0 - 2.0)))
+fn commuted(n) {
+  let dt = 0.5
+  mut p = C(1.0)
+  let v = C(2.0)
+  for _ in 0..n {
+    p = p + dt * v + 2.0 * v * 3.0
+  }
+  p.x
+}
+assert_eq(commuted(2), 1.0 + 2.0 * (1.0 + 12.0))
+# With no `__rsub__`, `k - v` is the built-in operation's TypeError,
+# reached through the boxed dispatch.
+fn unreflected() {
+  let v = C(2.0)
+  1.0 - v
+}
+assert_throws('TypeError', unreflected)
+# A `mut` number is not one the compiler can count on: still right, boxed.
+fn rebound(n) {
+  mut k = 0.5
+  mut p = R(0.0)
+  let v = R(2.0)
+  for _ in 0..n {
+    p = p + k * v
+    k = 1.0
+  }
+  p.x
+}
+assert_eq(rebound(2), (2.0 * 0.5 + 1.0) + (2.0 * 1.0 + 1.0))
+# A parameter type error in the reflected dunder reports at the operator
+# expression, spliced or not (the boxed one is four lines below).
+@value
+class T {
+  x: Float
+  new(@x) {}
+  __rmul__(k: Float) { T(self.x * k) }
+}
+fn spliced_t() {
+  let v = T(1.0)
+  let w = 2 * v
+  w.x
+}
+fn boxed_t(v) {
+  let w = 2 * v
+  w.x
+}
+let at = fn (f) {
+  try {
+    f()
+    nil
+  } catch e {
+    (e.message, e.line, e.col)
+  }
+}
+let (sm, sl, sc) = at(spliced_t)
+let (bm, bl, bc) = at(|| boxed_t(T(1.0)))
+assert_eq((sm, sl + 4, sc), (bm, bl, bc))
+
+# --- a `let` in a loop body that consumes a run of the enclosing list ---
+
+fn nested_let(n) {
+  mut p = V2(1.0, 0.0)
+  let v = V2(0.0, 1.0)
+  for _ in 0..n {
+    let d = v * 0.5
+    p = p + d
+  }
+  (p.x, p.y)
+}
+assert_eq(nested_let(3), (1.0, 1.5))
+# A nested name that also means another binding the walk reaches (`d`
+# after the loop, `e` in two sibling bodies): still right.
+fn nested_names(n) {
+  mut p = V2(1.0, 0.0)
+  let v = V2(0.0, 1.0)
+  for _ in 0..n {
+    let d = v * 0.5
+    p = p + d
+  }
+  for _ in 0..n {
+    let e = v * 0.25
+    p = p + e
+  }
+  if n > 0 {
+    let e = v * 2.0
+    p = p + e
+  }
+  let d = 10.0
+  (p.x + d, p.y)
+}
+assert_eq(nested_names(2), (11.0, 1.0 + 0.5 + 2.0))

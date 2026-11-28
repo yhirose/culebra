@@ -5129,6 +5129,11 @@ class Compiler {
     // verified on entry (§14), so a read of one of those fields inside this
     // frame knows its type without asking. Null everywhere else.
     const culebra::ClassFieldTypes* decl_fields = nullptr;
+    // Every read of this name is a Long or a Float: a binding written once,
+    // in this frame's own slot (not a cell a closure could see written
+    // again), by a number (static_number) or as a parameter annotated as
+    // one. What lets `k * v` dispatch to `v`'s reflected method unasked.
+    bool number = false;
     // The same, for the fields whose annotation names another class: what
     // `let car = self.car` hands `car`, so `car.speed` knows its type.
     const culebra::ClassFieldClasses* decl_field_classes = nullptr;
@@ -5817,6 +5822,54 @@ class Compiler {
     if (!v) return;
     b.known.constant = *v;
     if (b.known.cell < 0) b.known.cell = prog_.next_known_cell++;
+  }
+
+  // Binding::number, for a binding just declared: only one written once,
+  // in its own slot.
+  static void grant_number(Binding& b, bool number) {
+    b.number = number && !b.is_cell && !b.lazy && binding_writes_once(b);
+  }
+
+  // Whether an annotation admits only Longs and Floats (`Float`, `Long`,
+  // `Long | Float`), so a parameter checked against it holds a number.
+  static bool annotation_is_number(std::string_view type) {
+    const auto numbers = _culebra_tag_bit(TAG_LONG) | _culebra_tag_bit(TAG_FLOAT);
+    while (true) {
+      size_t bar = type.find('|');
+      std::string_view a = type.substr(0, bar);
+      while (!a.empty() && a.front() == ' ') a.remove_prefix(1);
+      while (!a.empty() && a.back() == ' ') a.remove_suffix(1);
+      auto t = _culebra_type_tags(a);
+      if (!t.exact || !t || (t.set & ~numbers)) return false;
+      if (bar == std::string_view::npos) return true;
+      type.remove_prefix(bar + 1);
+    }
+  }
+
+  // Whether `e` evaluates to a Long or a Float whenever it evaluates at all:
+  // a numeric literal, a name that holds one (Binding::number), or the
+  // arithmetic of such, which no class can answer for.
+  bool static_number(const peg::Ast& e) {
+    using namespace peg::udl;
+    switch (e.tag) {
+      case "NUMBER"_:
+      case "FLOAT"_: return true;
+      case "UNARY_MINUS"_: return e.nodes.size() >= 2 && static_number(*e.nodes[1]);
+      case "IDENTIFIER"_: {
+        const Binding* b = lookup_name(e.token);
+        return b && b->number;
+      }
+      case "ADDITIVE"_:
+      case "MULTIPLICATIVE"_:
+        for (size_t i = 0; i < e.nodes.size(); i++) {
+          const auto t = e.nodes[i]->token;
+          if (i % 2 == 0 ? !static_number(*e.nodes[i])
+                         : !(t == "+" || t == "-" || t == "*" || t == "/" || t == "%"))
+            return false;
+        }
+        return e.nodes.size() >= 3;
+      default: return false;
+    }
   }
 
   // The scalar an expression spells when it is a literal — a NUMBER, FLOAT
@@ -9568,6 +9621,7 @@ class Compiler {
         if (!pl.is_mut && !pl.type.empty()) {
           b.decl_fields = culebra::class_field_types_of(pl.type);
           b.decl_field_classes = culebra::class_field_classes_of(pl.type);
+          fc.grant_number(b, annotation_is_number(pl.type));
         }
       }
     }
@@ -9898,7 +9952,9 @@ class Compiler {
       } else {
         store_into(slot, rhs, /*dst_is_fresh=*/true);
       }
+      bool number = static_number(*av.rhs);
       push_binding(*tgt, {name, slot, decl_mut, cell});
+      grant_number(scopes_.back().bindings.back(), number);
       grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
       grant_known_const(scopes_.back().bindings.back(), *av.rhs);
       grant_declared_class(scopes_.back().bindings.back(), *av.rhs,
@@ -9990,7 +10046,8 @@ class Compiler {
       Op cop = compound_op(ast, base);
       auto rhs =
           av.type_annotation.empty()
-              ? compile_spliced_operand(base, *b->unboxed_class, *av.rhs)
+              ? compile_spliced_operand(splice_dunder_for_token(base),
+                                        *b->unboxed_class, *av.rhs)
               : compile_assign_rhs(ast, av);
       assert((av.type_annotation.empty() || !rhs.unboxed_class) &&
              "an annotated compound step's RHS must arrive boxed");
@@ -11217,15 +11274,14 @@ class Compiler {
   // answered through the round's cache (round_splices_, SpliceCache's
   // comment); one asked from inside a member body asks for real, holding
   // whatever recursion guards it holds.
-  bool operator_token_splice_ok(std::string_view t, const peg::Ast& cls,
-                                std::string_view class_name,
-                                const std::vector<std::string>* layout) {
+  bool dunder_splices(std::string_view dunder, const peg::Ast& cls,
+                      std::string_view class_name,
+                      const std::vector<std::string>* layout) {
     auto ask = [&] {
-      return dunder_splice_ok(splice_dunder_for_token(t), 1, cls, class_name,
-                              layout);
+      return dunder_splice_ok(dunder, 1, cls, class_name, layout);
     };
     if (!round_splices_ || !member_frames_.empty()) return ask();
-    auto key = std::pair{&cls, t};
+    auto key = std::pair{&cls, dunder};
     if (auto it = round_splices_->find(key); it != round_splices_->end())
       return it->second;
     bool ok = ask();
@@ -11249,22 +11305,79 @@ class Compiler {
     return {};
   }
 
-  // Whether every operator in an ADDITIVE/MULTIPLICATIVE fold's
-  // `node.nodes[from..]` (its own [op, operand]* tail) resolves to a
-  // splice-able dunder on `cls`. `cls` is already settled by the caller
-  // (an operand[0] proven to BE `cls`, or a receiver already known to be
-  // one), so this only asks the operators. Shared by every caller that
-  // ends up asking this same question about a fold shaped this way: the
-  // pure lookahead (`fold_resolves_to_class`), the receiver-marker safety
-  // net (`receiver_refs_stay_unboxed`), and the whole-scope walk for a
-  // local (`value_ref_ok`).
-  bool fold_operators_splice_ok(const peg::Ast& node, size_t from,
-                                const peg::Ast& cls, std::string_view class_name,
-                                const std::vector<std::string>* layout) {
-    for (size_t i = from; i + 1 < node.nodes.size(); i += 2)
-      if (!operator_token_splice_ok(node.nodes[i]->token, cls, class_name,
-                                    layout))
-        return false;
+  // The reflected dunder of an operator's own (`__mul__` -> `__rmul__`),
+  // which the right operand answers with when the left has none.
+  static std::string_view reflected_dunder(std::string_view own) {
+    static constexpr std::pair<std::string_view, std::string_view> kReflected[] = {
+        {"__add__", "__radd__"}, {"__sub__", "__rsub__"}, {"__mul__", "__rmul__"},
+        {"__div__", "__rdiv__"}, {"__mod__", "__rmod__"},
+        {"__matmul__", "__rmatmul__"}};
+    for (auto [o, r] : kReflected)
+      if (o == own) return r;
+    return {};
+  }
+
+  // An ADDITIVE/MULTIPLICATIVE fold as the splices read it: the operand
+  // whose class answers first (`head`), then each operator as the dunder
+  // it reaches and the operand it hands that dunder. The one place a fold
+  // is read so: every lookahead, walk and emitter of a fold takes its head
+  // and steps from here, never from the nodes.
+  //
+  // Written left to right, that is operand[0], then each token's dunder.
+  // `k op v ...` with `k` a number (static_number) and `v` a run is
+  // answered by `v` instead: a number has no operator methods, so the boxed
+  // dispatch asks `v`'s reflected one (`k * v` is `v.__rmul__(k)`), and for
+  // `+` and `*` with none, `v`'s own (`v.__mul__(k)`). The head is `v`, the
+  // first step that dunder with `k`, and `k` is evaluated after `v`, which
+  // no number can observe.
+  struct FoldStep {
+    std::string_view dunder;  // empty for a token nothing splices
+    const peg::Ast* operand;
+  };
+  struct FoldSteps {
+    const peg::Ast* head;
+    std::vector<FoldStep> steps;
+  };
+  FoldSteps fold_steps(const peg::Ast& fold) {
+    assert(fold.nodes.size() >= 3 && "a fold has an operator");
+    FoldSteps f{fold.nodes[0].get(), {}};
+    size_t from = 1;
+    if (auto r = reflected_first(fold)) {
+      f.head = fold.nodes[2].get();
+      f.steps.push_back({*r, fold.nodes[0].get()});
+      from = 3;
+    }
+    for (size_t i = from; i + 1 < fold.nodes.size(); i += 2)
+      f.steps.push_back({splice_dunder_for_token(fold.nodes[i]->token),
+                         fold.nodes[i + 1].get()});
+    return f;
+  }
+  // fold_steps' reflected head: the dunder `v` answers `k op v` with, when
+  // `k` is a number and `v` a run outside any member body (whose `self`
+  // the receiver rules govern). nullopt for a fold read left to right.
+  std::optional<std::string_view> reflected_first(const peg::Ast& fold) {
+    using namespace peg::udl;
+    const peg::Ast& v = *fold.nodes[2];
+    if (!member_frames_.empty() || v.tag != "IDENTIFIER"_ || v.token == "self")
+      return std::nullopt;
+    const peg::Ast* cls = run_class_named(v);
+    if (!cls || !static_number(*fold.nodes[0])) return std::nullopt;
+    const std::string_view op = fold.nodes[1]->token;
+    const std::string_view own = splice_dunder_for_token(op);
+    if (own.empty()) return std::nullopt;
+    if (auto r = reflected_dunder(own); value_method_ast(*cls, r)) return r;
+    if ((op == "+" || op == "*") && value_method_ast(*cls, own)) return own;
+    return std::nullopt;
+  }
+
+  // Whether every step of a fold reaches a splice-able dunder on `cls`.
+  // `cls` is already settled by the caller (the head proven to BE `cls`),
+  // so this only asks the dunders.
+  bool fold_steps_splice_ok(const FoldSteps& f, const peg::Ast& cls,
+                            std::string_view class_name,
+                            const std::vector<std::string>* layout) {
+    for (const auto& s : f.steps)
+      if (!dunder_splices(s.dunder, cls, class_name, layout)) return false;
     return true;
   }
 
@@ -11477,16 +11590,18 @@ class Compiler {
     const AssumedRuns* live = nullptr;
   };
 
-  // `operator_token_splice_ok` for one walk's class.
-  bool operator_splices(std::string_view t, const ValueWalk& w) {
-    return operator_token_splice_ok(t, *w.cls, w.class_name, w.layout);
+  // `dunder_splices` for one walk's class.
+  bool operator_splices(std::string_view dunder, const ValueWalk& w) {
+    return dunder_splices(dunder, *w.cls, w.class_name, w.layout);
   }
 
-  // `fold_operators_splice_ok` for one walk, likewise.
-  bool fold_operators_splice_ok(const peg::Ast& node, size_t from,
-                                const ValueWalk& w) {
-    for (size_t i = from; i + 1 < node.nodes.size(); i += 2)
-      if (!operator_splices(node.nodes[i]->token, w)) return false;
+  // A fold's steps for one walk: each dunder splices, and each operand is
+  // one its dunder's parameter takes (consumer_operand_ok).
+  bool fold_steps_ok(const FoldSteps& f, const ValueWalk& w) {
+    for (const auto& s : f.steps)
+      if (!operator_splices(s.dunder, w) ||
+          !consumer_operand_ok(s.dunder, *s.operand, w))
+        return false;
     return true;
   }
 
@@ -11518,8 +11633,9 @@ class Compiler {
     using namespace peg::udl;
     if (name_chain_run_ok(node, w)) return true;
     if ((node.tag == "ADDITIVE"_ || node.tag == "MULTIPLICATIVE"_) &&
-        node.nodes.size() >= 3 && run_rooted_at_name(*node.nodes[0], w))
-      return fold_operators_splice_ok(node, 1, w) && fold_operands_ok(node, w);
+        node.nodes.size() >= 3)
+      if (auto f = fold_steps(node); run_rooted_at_name(*f.head, w))
+        return fold_steps_ok(f, w);
     if (node.tag == "UNARY_MINUS"_ && node.nodes.size() >= 2 &&
         run_rooted_at_name(*node.nodes[1], w))
       return neg_operator_splice_ok(*w.cls, w.class_name, w.layout);
@@ -11545,9 +11661,10 @@ class Compiler {
       return run_rooted_at_name(h, w) || run_of_class_ok(h, w);
     };
     if ((e.tag == "ADDITIVE"_ || e.tag == "MULTIPLICATIVE"_) &&
-        e.nodes.size() >= 3)
-      return head_ok(*e.nodes[0]) && fold_operators_splice_ok(e, 1, w) &&
-             fold_operands_ok(e, w);
+        e.nodes.size() >= 3) {
+      auto f = fold_steps(e);
+      return head_ok(*f.head) && fold_steps_ok(f, w);
+    }
     if (e.tag == "UNARY_MINUS"_ && e.nodes.size() >= 2)
       return head_ok(*e.nodes[1]) &&
              neg_operator_splice_ok(*w.cls, w.class_name, w.layout);
@@ -11614,9 +11731,9 @@ class Compiler {
     if (!fold) return value_ref_ok(rhs, w);
     // The class was settled just above; the head and the operands are each
     // asked how they hold `name`.
-    const peg::Ast& head = *rhs.nodes[0];
-    return (value_ref_ok(head, w) || is_run_of_name(head, w)) &&
-           fold_operands_ok(rhs, w);
+    auto f = fold_steps(rhs);
+    return (value_ref_ok(*f.head, w) || is_run_of_name(*f.head, w)) &&
+           fold_steps_ok(f, w);
   }
 
   // The generalised `receiver_refs_stay_unboxed`, for a `let [mut]` local
@@ -11755,8 +11872,9 @@ class Compiler {
         // binds `e` to its parameter the same way (compile_spliced_operand):
         // a run rooted at `name` there is consumed when the parameter takes
         // one.
-        return operator_splices(av.op_base, w) && av.rhs &&
-               consumer_operand_ok(av.op_base, *av.rhs, w);
+        auto dunder = splice_dunder_for_token(av.op_base);
+        return operator_splices(dunder, w) && av.rhs &&
+               consumer_operand_ok(dunder, *av.rhs, w);
       }
       // A step on ANOTHER binding that is itself kept as a run: its
       // operands are consumed by the spliced dunder's parameter, so `name`
@@ -11889,9 +12007,11 @@ class Compiler {
     // A declaration also binds the name, so a shadow of `name` here is the
     // decline the walk's own ASSIGNMENT case makes; `target != name` is
     // already established by the caller.
-    if (av.compound)
-      return operator_splices(av.op_base, w) &&
-             consumer_operand_ok(av.op_base, *av.rhs, w);
+    if (av.compound) {
+      auto dunder = splice_dunder_for_token(av.op_base);
+      return operator_splices(dunder, w) &&
+             consumer_operand_ok(dunder, *av.rhs, w);
+    }
     const peg::Ast& rhs = *av.rhs;
     if (rhs.tag != "ADDITIVE"_ && rhs.tag != "MULTIPLICATIVE"_) return false;
     if (rhs.nodes.size() < 3) return false;
@@ -11900,31 +12020,21 @@ class Compiler {
     // (`let d = v + g`) as well as any later operand.
     // A head that is a chain mentions `name` only in its arguments, which
     // are ordinary positions.
-    const peg::Ast& head = *rhs.nodes[0];
+    auto f = fold_steps(rhs);
+    const peg::Ast& head = *f.head;
     bool head_ok = head.tag == "IDENTIFIER"_
                        ? name_run_class(head.token, w) == w.cls
                        : run_of_class_ok(head, w);
-    return head_ok && fold_operators_splice_ok(rhs, 1, w) &&
-           fold_operands_ok(rhs, w);
-  }
-
-  // A fold's operands after its head, each as the spliced dunder's
-  // parameter takes it.
-  bool fold_operands_ok(const peg::Ast& fold, const ValueWalk& w) {
-    for (size_t i = 1; i + 1 < fold.nodes.size(); i += 2)
-      if (!consumer_operand_ok(fold.nodes[i]->token, *fold.nodes[i + 1], w))
-        return false;
-    return true;
+    return head_ok && fold_steps_ok(f, w);
   }
 
   // One operand of such a step. An operand `name` does not appear in is the
   // ordinary walk's business; one it is rooted at needs the dunder's
   // parameter to be able to hold a run.
-  bool consumer_operand_ok(std::string_view op_token, const peg::Ast& operand,
+  bool consumer_operand_ok(std::string_view dunder, const peg::Ast& operand,
                            const ValueWalk& w) {
     using namespace peg::udl;
     if (value_ref_ok(operand, w)) return true;
-    auto dunder = splice_dunder_for_token(op_token);
     if (dunder.empty() ||
         !dunder_takes_run_param(*w.cls, dunder, *w.cls, w.class_name, w.layout))
       return false;
@@ -12020,17 +12130,16 @@ class Compiler {
   // because a parameter is never `mut`.
   //
   // Declining is a REFINEMENT, never a veto: the caller has already proven
-  // the dunder splices with a boxed parameter (`operator_token_splice_ok`),
+  // the dunder splices with a boxed parameter (`dunder_splices`),
   // so falling through here means only "compile this operand the way it
   // always was". That is what keeps the fold's up-front scan and its
   // emitting half from being able to disagree — the scan's promise holds
   // either way, and nothing about it needs to know which binding form the
   // operand ends up taking. Shared by the fold and by a compound
   // assignment, which splices the same dunder.
-  ExprResult compile_spliced_operand(std::string_view op_token,
+  ExprResult compile_spliced_operand(std::string_view dunder,
                                      const peg::Ast& recv_cls,
                                      const peg::Ast& operand) {
-    auto dunder = splice_dunder_for_token(op_token);
     const peg::Ast* m =
         dunder.empty() ? nullptr : value_method_ast(recv_cls, dunder);
     auto ps = m ? inline_params(*m) : std::nullopt;
@@ -12140,6 +12249,7 @@ class Compiler {
 
   // Everything about one declaration a round needs, or nullopt when
   // `stmts[i]` is not a candidate at all.
+  using StatementList = std::vector<std::shared_ptr<peg::Ast>>;
   struct ValueCandidate {
     const peg::Ast* decl;
     size_t index;
@@ -12148,6 +12258,9 @@ class Compiler {
     std::string class_name;
     const std::vector<std::string>* layout;
     bool writes_ok;
+    // The statement list it is declared in, which its own walk covers from
+    // `index` on: the round's own, or one nested in it (a loop body).
+    const StatementList* list = nullptr;
   };
 
   std::optional<ValueCandidate> value_candidate_at(
@@ -12175,7 +12288,7 @@ class Compiler {
     auto class_name = vc->name;
     const auto* layout = vc->layout;
     return ValueCandidate{&stmt,   i,      name, cls,
-                          std::string(class_name), layout, av.is_mut};
+                          std::string(class_name), layout, av.is_mut, &stmts};
   }
 
   // The whole-scope pre-pass itself (spec §15.3), for ONE statement —
@@ -12241,21 +12354,22 @@ class Compiler {
     // fewer candidates, could answer one of them differently, and by then
     // the bindings that leaned on the first answer have compiled.
     const void* list = stmts.data();
-    if (auto prev = rounds_.find(list); prev != rounds_.end()) {
-      if (prev->second.start < i) {
-        if (prev->second.decided.contains(stmts[i].get())) return;
-        // Not answered: its class was not registered when that round ran,
-        // so it opens one of its own below.
-      } else {
-        // A round starting at or before this index again means the list is
-        // being compiled afresh, in a scope whose outer bindings may
-        // differ. The old answers are dropped rather than reused:
-        // everything here is decided from scratch, as it was the first
-        // time.
-        for (const auto* d : prev->second.decided) value_unboxed_.erase(d);
-        rounds_.erase(prev);
+    // A round starting at or before this index again means the list is
+    // being compiled afresh, in a scope whose outer bindings may differ.
+    // The old answers are dropped rather than reused: everything here is
+    // decided from scratch, as it was the first time.
+    if (auto prev = rounds_.find(list);
+        prev != rounds_.end() && prev->second.start >= i) {
+      for (const auto* d : prev->second.decided) {
+        value_unboxed_.erase(d);
+        decided_.erase(d);
       }
+      rounds_.erase(prev);
     }
+    // Answered by an earlier round, of this list or of one it is nested in.
+    // Not answered: its class was not registered when that round ran, so it
+    // opens one of its own below.
+    if (decided_.contains(stmts[i].get())) return;
     if (!value_candidate_at(stmts, i)) return;
     // Every LATER candidate joins the round — but only those whose class is
     // registered by now, which is exactly what the per-statement schedule
@@ -12281,41 +12395,51 @@ class Compiler {
       }
     } round_guard{*this, std::exchange(assumed_runs_, &live),
                   std::exchange(round_splices_, &splices)};
+    // The candidates of the lists nested in this one's later statements (a
+    // loop body's `let d = v * DT`) join the round too, so a run consumed
+    // there is decided together with what consumes it, and its answer is
+    // this list's to keep (decided_ is where the nested list's compile
+    // finds it).
     std::set<std::string> seen;
-    for (size_t k = i; k < stmts.size(); k++) {
-      auto c = value_candidate_at(stmts, k);
-      if (!c) continue;
-      // Two candidates sharing a name are two bindings this walk cannot
-      // tell apart — the same reason a shadow declines. Neither is
-      // assumed, and neither is decided here.
-      if (!seen.insert(c->name).second) {
-        live.erase(c->name);
-        continue;
+    std::vector<std::pair<const StatementList*, const peg::Ast*>> nested;
+    auto join = [&](const StatementList& l, size_t from, const peg::Ast* in) {
+      for (size_t k = from; k < l.size(); k++) {
+        if (auto c = value_candidate_at(l, k)) {
+          // Two candidates sharing a name are two bindings this walk cannot
+          // tell apart — the same reason a shadow declines. Neither is
+          // assumed, and neither is decided here.
+          if (!seen.insert(c->name).second) {
+            live.erase(c->name);
+          } else if (in && !only_after(*c, *in, stmts, i)) {
+            // Its name also means another binding somewhere the round
+            // walks; an assumption made by name would reach it too.
+          } else if (decided_.contains(c->decl)) {
+            // One an earlier round of this same pass already answered keeps
+            // that answer: it is what the bindings compiled since were
+            // classified against.
+            if (value_unboxed_.contains(c->decl))
+              live[c->name] = {c->cls, c->decl};
+          } else {
+            live[c->name] = {c->cls, c->decl};
+            cands.push_back(*c);
+          }
+        }
+        each_nested_list(*l[k], [&](const peg::Ast& body) {
+          nested.emplace_back(&body.nodes, &body);
+        });
       }
-      // One an earlier round of this same pass already answered keeps that
-      // answer: it is what the bindings compiled since were classified
-      // against.
-      if (round.decided.contains(c->decl)) {
-        if (value_unboxed_.contains(c->decl))
-          live[c->name] = {c->cls, c->decl};
-        continue;
-      }
-      live[c->name] = {c->cls, c->decl};
-      cands.push_back(*c);
-    }
+    };
+    join(stmts, i, nullptr);
+    for (size_t n = 0; n < nested.size(); n++)
+      join(*nested[n].first, 0, nested[n].second);
     // An unboxed local is read in place from its home slots, so one that an
     // expression rebinds while an operand still holds it stays boxed.
-    if (!cands.empty()) {
-      std::unordered_map<std::string_view, size_t> last_write;
+    for (const auto& c : cands) {
       std::vector<Rebind> w;
-      for (size_t j = cands.front().index + 1; j < stmts.size(); j++) {
-        w.clear();
-        statement_writes(*stmts[j], w, /*deep=*/true);
-        for (const auto& r : w) last_write[r.name] = j;
-      }
-      for (const auto& c : cands)
-        if (auto it = last_write.find(c.name); it != last_write.end() && it->second > c.index)
-          live.erase(c.name);
+      for (size_t j = c.index + 1; j < c.list->size(); j++)
+        statement_writes(*(*c.list)[j], w, /*deep=*/true);
+      if (std::ranges::any_of(w, [&](const Rebind& r) { return r.name == c.name; }))
+        live.erase(c.name);
     }
     for (bool changed = true; changed;) {
       changed = false;
@@ -12324,10 +12448,11 @@ class Compiler {
         ValueWalk w{c.name, c.cls, c.class_name, c.layout, c.writes_ok, &live};
         // Its own declaration first: one that leaned on a candidate dropped
         // since no longer resolves to a run.
-        auto again = value_candidate_at(stmts, c.index);
+        const StatementList& l = *c.list;
+        auto again = value_candidate_at(l, c.index);
         bool ok = again && again->cls == c.cls;
-        for (size_t j = c.index + 1; j < stmts.size() && ok; j++)
-          if (!value_ref_ok(*stmts[j], w)) ok = false;
+        for (size_t j = c.index + 1; j < l.size() && ok; j++)
+          if (!value_ref_ok(*l[j], w)) ok = false;
         if (!ok) {
           live.erase(c.name);
           changed = true;
@@ -12336,22 +12461,58 @@ class Compiler {
     }
     for (const auto& c : cands) {
       round.decided.insert(c.decl);
+      decided_.insert(c.decl);
       if (live.contains(c.name)) value_unboxed_[c.decl] = {c.layout, c.cls};
     }
     round.start = i;
   }
+
+  // The statement lists `node` holds that compile into the same chunk: a
+  // loop's, an `if` arm's, a block's, not a nested `fn`'s or a class's.
+  template <class F>
+  static void each_nested_list(const peg::Ast& node, F&& f) {
+    using namespace peg::udl;
+    if (node.tag == "FUNCTION"_ || node.tag == "MULTIFN_DECL"_ ||
+        node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_)
+      return;
+    if (node.tag == "STATEMENTS"_) {
+      f(node);
+      return;
+    }
+    for (const auto& n : node.nodes) each_nested_list(*n, f);
+  }
+
+  // Whether a nested list's candidate `c` is the only binding its name
+  // means in what the round walks (`stmts` from `from`): every occurrence
+  // of the name is inside `body`, its own list, after its declaration.
+  static bool only_after(const ValueCandidate& c, const peg::Ast& body,
+                         const StatementList& stmts, size_t from) {
+    const size_t start = c.decl->position;
+    const size_t end = body.position + body.length;
+    bool ok = true;
+    for (size_t k = from; k < stmts.size() && ok; k++)
+      walk_identifiers(*stmts[k], [&](const peg::Ast& id) {
+        if (id.token == c.name && (id.position < start || id.position >= end))
+          ok = false;
+      });
+    return ok;
+  }
   // Per statement list: where its current round started, and which
-  // declarations that round (and any earlier one of the same pass) answered.
+  // declarations that round (and any earlier one of the same pass)
+  // answered, those of the lists nested in it among them — they were
+  // answered together, so they are dropped together.
   struct PrecheckRound {
     size_t start = 0;
     std::set<const peg::Ast*> decided;
   };
   std::map<const void*, PrecheckRound> rounds_;
+  // Every declaration a live round has answered, whichever list's it was.
+  std::set<const peg::Ast*> decided_;
 
-  // Every IDENTIFIER the body reads, stopping at a nested declaration (whose
-  // names are its own). A property name rides its DOT node rather than an
-  // IDENTIFIER, so `v.x` contributes `v` and not `x` — which is what makes
-  // this a question about bindings rather than about fields.
+  // Every IDENTIFIER node the body reads, stopping at a nested declaration
+  // (whose names are its own). A property name rides its DOT node rather
+  // than an IDENTIFIER, so `v.x` contributes `v` and not `x` — which is what
+  // makes this a question about bindings rather than about fields.
   template <class F>
   static void walk_identifiers(const peg::Ast& node, F&& f) {
     using namespace peg::udl;
@@ -12364,7 +12525,7 @@ class Compiler {
     // The same distinction every other postfix reader in this file makes.
     if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
       return;
-    if (node.tag == "IDENTIFIER"_ && node.is_token) f(node.token);
+    if (node.tag == "IDENTIFIER"_ && node.is_token) f(node);
     for (const auto& n : node.nodes) walk_identifiers(*n, f);
   }
 
@@ -12818,7 +12979,7 @@ class Compiler {
     return b ? b->unboxed_class : nullptr;
   }
   // The round deciding now (precheck_value_bindings_at), for the lookahead
-  // and operator_token_splice_ok; null outside one.
+  // and dunder_splices; null outside one.
   const AssumedRuns* assumed_runs_ = nullptr;
   SpliceCache* round_splices_ = nullptr;
 
@@ -13032,18 +13193,15 @@ class Compiler {
   // short of reifying mid-fold. No emission — cheap to ask, cheap to throw
   // away.
   const peg::Ast* fold_resolves_to_class(const peg::Ast& ast) {
-    using namespace peg::udl;
     if (ast.nodes.size() < 3) return nullptr;
-    // operand[0] may itself be an operator (`p * 0.5 + v`): any of the three
+    // The head may itself be an operator (`p * 0.5 + v`): any of the three
     // run shapes, compiled by compile_unboxed_value_expr.
-    const peg::Ast* cls = unboxed_value_expr_class(*ast.nodes[0]);
+    auto f = fold_steps(ast);
+    const peg::Ast* cls = unboxed_value_expr_class(*f.head);
     if (!cls) return nullptr;
     auto vc = value_class_of(*cls);
     if (!vc) return nullptr;
-    auto class_name = vc->name;
-    const auto* layout = vc->layout;
-    if (!fold_operators_splice_ok(ast, 1, *cls, class_name, layout))
-      return nullptr;
+    if (!fold_steps_splice_ok(f, *cls, vc->name, vc->layout)) return nullptr;
     return cls;
   }
 
@@ -13088,46 +13246,47 @@ class Compiler {
   // result feeds into) passes true.
   ExprResult compile_fold(const peg::Ast& ast, bool allow_trailing_class) {
     using namespace peg::udl;
-    const peg::Ast* fold_class =
-        allow_trailing_class && ast.nodes.size() >= 3
-            ? fold_resolves_to_class(ast)
-            : nullptr;
-    auto acc = fold_class ? compile_unboxed_value_expr(*ast.nodes[0])
-                          : compile_expr(*ast.nodes[0]);
+    if (allow_trailing_class && fold_resolves_to_class(ast))
+      return compile_spliced_fold(ast);
+    auto acc = compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
       auto op_tok = ast.nodes[i]->token;
       auto found = binary_op_for_token(op_tok);
       if (!found)
         reject(*ast.nodes[i], culebra::format("operator '{}'", op_tok));
       Op op = *found;
-      // An unboxed accumulator: splice the class's operator method instead
-      // of the runtime dispatch. fold_resolves_to_class's up-front scan is
-      // what guarantees a dunder exists here whenever `acc` is unboxed —
-      // the assert pins that invariant rather than silently trusting it,
-      // the same way run_resolved's does for a resolved call site. An
-      // unboxed accumulator with NO scan behind it means an unboxed value
-      // (`self` inside a splice, or a marked local) leaked through the
+      // An unboxed accumulator with no scan behind it means an unboxed
+      // value (`self` inside a splice, or a marked local) leaked through the
       // ordinary dispatch — a context one of the two walks
-      // (receiver_refs_stay_unboxed / value_ref_ok) was supposed to
-      // have declined.
-      if (acc.unboxed_class) {
-        assert(fold_class &&
-               "an unboxed operand[0] reached a fold whose up-front scan "
-               "never ran or declined -- a walk let an unboxed value into "
-               "an unclassified context");
-        auto rhs = compile_spliced_operand(op_tok, *acc.unboxed_class,
-                                           *ast.nodes[i + 1]);
-        auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs});
-        assert(r && "fold_resolves_to_class's scan promised this inlines");
-        acc = *r;
-        continue;
-      }
+      // (receiver_refs_stay_unboxed / value_ref_ok) was supposed to have
+      // declined.
+      assert(!acc.unboxed_class &&
+             "an unboxed operand[0] reached a fold whose up-front scan "
+             "never ran or declined -- a walk let an unboxed value into "
+             "an unclassified context");
       auto rhs = compile_expr(*ast.nodes[i + 1]);
       assert(!rhs.unboxed_class &&
              "a fold operand other than [0] must arrive boxed");
       int32_t t = alloc_temp(ast);
       emit(op, t, acc.slot, rhs.slot);
       acc = {t, true};
+    }
+    return acc;
+  }
+
+  // A fold fold_resolves_to_class proved splices, step by step as
+  // fold_steps reads it: the head as a run, then each step's dunder spliced
+  // in place of the runtime dispatch, the run carried from one to the next.
+  ExprResult compile_spliced_fold(const peg::Ast& ast) {
+    auto f = fold_steps(ast);
+    auto acc = compile_unboxed_value_expr(*f.head);
+    for (const auto& s : f.steps) {
+      assert(acc.unboxed_class && "a spliced step leaves a run");
+      auto rhs = compile_spliced_operand(s.dunder, *acc.unboxed_class,
+                                         *s.operand);
+      auto r = try_inline_operator(ast, acc, s.dunder, {rhs});
+      assert(r && "fold_resolves_to_class's scan promised this inlines");
+      acc = *r;
     }
     return acc;
   }
